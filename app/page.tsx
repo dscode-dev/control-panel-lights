@@ -59,6 +59,21 @@ export default function Page() {
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null);
   const [draft, setDraft] = useState<PlaylistStep>(emptyDraft);
 
+  async function handleCreateStep(payload: {
+    title: string;
+    type: string;
+    palette: string;
+    genre: string;
+    youtubeUrl: string;
+    useAI: boolean;
+  }) {
+    // fecha modal imediatamente
+    setAddOpen(false);
+
+    // backend cria step em "processing"
+    await api.addStepFromYoutube(payload);
+  }
+
   // Keep a ref to avoid stale closures
   const statusRef = useRef(status);
   useEffect(() => {
@@ -110,6 +125,27 @@ export default function Page() {
       if (msg.type === "status" && msg.data) setStatus(msg.data);
       if (msg.type === "playlist" && msg.data?.steps) setSteps(msg.data.steps);
       if (msg.type === "esp" && msg.data?.nodes) setEspNodes(msg.data.nodes);
+      if (msg.type === "playlist_progress") {
+        setSteps((prev) =>
+          prev.map((s) =>
+            s.id === msg.data.stepId ? { ...s, progress: msg.data.progress } : s
+          )
+        );
+      }
+
+      if (msg.type === "playlist_ready") {
+        setSteps((prev) =>
+          prev.map((s) => (s.id === msg.data.step.id ? msg.data.step : s))
+        );
+      }
+
+      if (msg.type === "playlist_error") {
+        setSteps((prev) =>
+          prev.map((s) =>
+            s.id === msg.data.stepId ? { ...s, status: "error" } : s
+          )
+        );
+      }
     });
 
     return () => sock.close();
@@ -252,12 +288,7 @@ export default function Page() {
         title="Adicionar Step a partir do YouTube"
         onClose={() => setAddOpen(false)}
       >
-        <StepForm
-          onSubmit={async (payload) => {
-            await api.addStepFromYoutube(payload);
-            setAddOpen(false);
-          }}
-        />
+        <StepForm onSubmit={handleCreateStep} />
       </Modal>
 
       {/* EDIT MODAL */}

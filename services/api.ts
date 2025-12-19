@@ -105,8 +105,9 @@ export async function addStepFromYoutube(payload: {
   youtubeUrl: string
   useAI: boolean
 }) {
-  return request<void>("/playlist/add-from-youtube", {
+  return request<{ stepId: string }>("/playlist/add-from-youtube", {
     method: "POST",
     body: JSON.stringify(payload),
   })
 }
+

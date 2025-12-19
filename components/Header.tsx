@@ -24,9 +24,9 @@ export default function Header({
         </p>
       </div>
 
-      <Button variant="secondary" onClick={onToggleMode}>
+      {/* <Button variant="secondary" onClick={onToggleMode}>
         {mode === "operator" ? "🎭 Show Mode" : "🎛 Operador"}
-      </Button>
+      </Button> */}
     </header>
   )
 }

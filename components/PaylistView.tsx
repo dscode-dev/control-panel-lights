@@ -10,17 +10,17 @@ interface Props {
   activeIndex: number
   mode: UiMode
 
-  /** callbacks reais (backend) */
   onAdd: () => void
   onEdit: (index: number) => void
   onDelete: (index: number) => void
   onPlayStep: (index: number) => void
 
-  /** progresso 0..1 por step */
+  /** progresso 0..1 por step (normalmente só o ativo), mas pode vir do próprio step.processing */
   getProgress: (index: number) => number
 }
 
-function formatMs(ms: number) {
+function formatMs(ms?: number) {
+  if (!ms || ms <= 0) return "—"
   const s = Math.max(0, Math.floor(ms / 1000))
   const mm = String(Math.floor(s / 60)).padStart(2, "0")
   const ss = String(s % 60).padStart(2, "0")
@@ -38,48 +38,47 @@ export default function PlaylistView({
   getProgress,
 }: Props) {
   /**
-   * Controle de expansão
-   * - ativo SEMPRE expandido
-   * - steps já executados colapsam automaticamente
+   * Expansão:
+   * - ativo sempre expandido
+   * - quando muda o ativo, colapsa os anteriores automaticamente
    */
   const [expanded, setExpanded] = useState<Set<number>>(new Set([activeIndex]))
 
   useEffect(() => {
-    const next = new Set<number>()
-    next.add(activeIndex)
-    setExpanded(next)
+    setExpanded(new Set([activeIndex]))
   }, [activeIndex])
 
   function toggleExpand(index: number) {
+    // mantém ativo sempre expandido (clica no ativo não colapsa)
     if (index === activeIndex) return
     setExpanded((prev) => {
-      const n = new Set(prev)
-      n.has(index) ? n.delete(index) : n.add(index)
-      return n
+      const next = new Set(prev)
+      next.has(index) ? next.delete(index) : next.add(index)
+      return next
     })
   }
 
   return (
-    <section className="rounded-2xl border border-[rgb(var(--border))] bg-[rgb(var(--surface))] shadow-sm">
+    <section className="rounded-2xl border border-[rgb(var(--border))] bg-[rgb(var(--surface))] shadow-sm overflow-hidden">
       {/* HEADER */}
-      <div className="flex items-center justify-between px-5 py-4 border-b border-[rgb(var(--border))]">
+      <div className="flex items-center justify-between gap-4 px-5 py-4 border-b border-[rgb(var(--border))]">
         <div>
           <div className="text-xs font-semibold tracking-widest text-[rgb(var(--text-faint))] uppercase">
             Playlist
           </div>
-          <h2 className="mt-1 text-xl font-semibold text-[rgb(var(--text-main))]">
+          <div className="mt-1 text-lg font-semibold text-[rgb(var(--text-main))]">
             Workflow do Show
-          </h2>
-          <p className="mt-1 text-sm text-[rgb(var(--text-muted))]">
-            {steps.length} steps • execução sequencial
-          </p>
+          </div>
+          <div className="mt-1 text-sm text-[rgb(var(--text-muted))]">
+            {steps.length} steps • duplo clique executa
+          </div>
         </div>
 
-        {mode === "operator" && (
+        {mode === "operator" ? (
           <Button variant="secondary" onClick={onAdd}>
             ➕ Adicionar Step
           </Button>
-        )}
+        ) : null}
       </div>
 
       {/* LISTA */}
@@ -87,16 +86,38 @@ export default function PlaylistView({
         {steps.map((step, index) => {
           const isActive = index === activeIndex
           const isExpanded = expanded.has(index)
-          const progress = getProgress(index)
-          const pct = Math.round(progress * 100)
+
+          const status = step.status || "ready"
+          const isProcessing = status === "processing"
+          const isReady = status === "ready"
+          const isError = status === "error"
+
+          // progress do item:
+          // - se backend colocar step.progress enquanto processing, usa ele
+          // - senão usa getProgress (normalmente para o ativo)
+          const p =
+            typeof step.progress === "number"
+              ? step.progress
+              : getProgress(index)
+
+          const pct = Math.max(0, Math.min(100, Math.round(p * 100)))
+
+          const canPlay = isReady
+          const canEdit = isReady // se quiser permitir editar ainda em processing, mude para true
+          const canDelete = true // se quiser bloquear delete em processing, coloque: !isProcessing
 
           return (
             <div
               key={step.id}
-              className={`rounded-xl border transition-all
+              className={`
+                rounded-2xl border transition-all
                 ${
-                  isActive
-                    ? "border-[rgb(var(--accent))]/40 bg-[rgb(var(--accent-soft))]"
+                  isProcessing
+                    ? "border-dashed border-[rgb(var(--border))] bg-[rgb(var(--surface-2))]"
+                    : isActive
+                    ? "border-[rgb(var(--accent))]/35 bg-[rgb(var(--accent-soft))]"
+                    : isError
+                    ? "border-red-200 bg-red-50"
                     : "border-[rgb(var(--border))] bg-white hover:bg-[rgb(var(--surface-2))]"
                 }
               `}
@@ -105,17 +126,25 @@ export default function PlaylistView({
               <div
                 className="flex items-start justify-between gap-4 p-4 cursor-pointer"
                 onClick={() => toggleExpand(index)}
-                onDoubleClick={() => onPlayStep(index)}
-                title="Clique para expandir • Duplo clique para executar"
+                onDoubleClick={() => {
+                  if (canPlay) onPlayStep(index)
+                }}
+                title={
+                  canPlay
+                    ? "Clique para expandir • Duplo clique para executar"
+                    : "Aguardando processamento..."
+                }
               >
-                {/* INFO */}
+                {/* LEFT */}
                 <div className="flex items-start gap-4 min-w-0">
-                  {/* ÍNDICE */}
+                  {/* índice */}
                   <div
-                    className="flex h-10 w-10 items-center justify-center rounded-xl text-sm font-semibold text-white shrink-0"
+                    className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-sm font-semibold text-white"
                     style={{
                       background:
-                        isActive
+                        isProcessing
+                          ? "linear-gradient(135deg, rgba(15,23,42,0.25), rgba(15,23,42,0.15))"
+                          : isActive
                           ? "linear-gradient(135deg, rgb(var(--accent)), rgb(var(--accent-strong)))"
                           : "linear-gradient(135deg, rgba(15,23,42,0.25), rgba(15,23,42,0.15))",
                     }}
@@ -123,76 +152,152 @@ export default function PlaylistView({
                     {index + 1}
                   </div>
 
-                  {/* TEXTO */}
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-semibold truncate text-[rgb(var(--text-main))]">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="truncate font-semibold text-[rgb(var(--text-main))]">
                         {step.title}
-                      </span>
+                      </div>
 
-                      {/* EXECUTANDO */}
-                      {isActive && (
-                        <span className="inline-flex items-center gap-1 text-xs font-semibold text-[rgb(var(--accent))]">
+                      {/* Executando (pulsar) */}
+                      {isActive && isReady ? (
+                        <div className="inline-flex items-center gap-2">
                           <span className="relative flex h-2 w-2">
                             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[rgb(var(--accent))] opacity-75" />
                             <span className="relative inline-flex h-2 w-2 rounded-full bg-[rgb(var(--accent))]" />
                           </span>
-                          Executando
+                          <span className="text-xs font-semibold text-[rgb(var(--accent))]">
+                            Executando
+                          </span>
+                        </div>
+                      ) : null}
+
+                      {/* Processing badge */}
+                      {isProcessing ? (
+                        <span className="text-xs font-semibold text-[rgb(var(--text-muted))]">
+                          Processando…
                         </span>
-                      )}
+                      ) : null}
+
+                      {/* Error badge */}
+                      {isError ? (
+                        <span className="text-xs font-semibold text-red-600">
+                          Erro
+                        </span>
+                      ) : null}
                     </div>
 
                     <div className="mt-1 text-xs text-[rgb(var(--text-muted))]">
-                      {step.type.toUpperCase()} • {formatMs(step.durationMs)}
+                      {step.type?.toUpperCase?.() || "—"}
+                      {step.genre ? ` • ${step.genre}` : ""}
+                      {step.durationMs ? ` • ${formatMs(step.durationMs)}` : ""}
                       {step.bpm ? ` • ${step.bpm} BPM` : ""}
                     </div>
                   </div>
                 </div>
 
-                {/* AÇÕES */}
-                {mode === "operator" && (
-                  <div className="flex items-center gap-2 shrink-0">
+                {/* RIGHT: ações */}
+                {mode === "operator" ? (
+                  <div className="flex shrink-0 items-center gap-2">
+                    {/* Play */}
                     <button
+                      className={`
+                        rounded-xl border px-3 py-2 text-sm
+                        ${
+                          canPlay
+                            ? "border-[rgb(var(--border))] bg-white text-[rgb(var(--accent))] hover:bg-[rgb(var(--surface-2))]"
+                            : "border-[rgb(var(--border))] bg-white/60 text-[rgb(var(--text-faint))] cursor-not-allowed"
+                        }
+                      `}
                       onClick={(e) => {
                         e.stopPropagation()
-                        onEdit(index)
+                        if (canPlay) onPlayStep(index)
                       }}
-                      className="rounded-lg border border-[rgb(var(--border))] bg-white px-3 py-1.5 text-sm hover:bg-[rgb(var(--surface-2))]"
+                      title={canPlay ? "Executar step" : "Aguardando processamento"}
+                    >
+                      ▶
+                    </button>
+
+                    {/* Edit */}
+                    <button
+                      className={`
+                        rounded-xl border px-3 py-2 text-sm
+                        ${
+                          canEdit
+                            ? "border-[rgb(var(--border))] bg-white text-[rgb(var(--text-main))] hover:bg-[rgb(var(--surface-2))]"
+                            : "border-[rgb(var(--border))] bg-white/60 text-[rgb(var(--text-faint))] cursor-not-allowed"
+                        }
+                      `}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (canEdit) onEdit(index)
+                      }}
+                      title={canEdit ? "Editar" : "Indisponível durante processamento"}
                     >
                       ✏️
                     </button>
+
+                    {/* Delete */}
                     <button
+                      className={`
+                        rounded-xl border px-3 py-2 text-sm
+                        ${
+                          canDelete
+                            ? "border-red-200 bg-white text-red-600 hover:bg-red-50"
+                            : "border-[rgb(var(--border))] bg-white/60 text-[rgb(var(--text-faint))] cursor-not-allowed"
+                        }
+                      `}
                       onClick={(e) => {
                         e.stopPropagation()
-                        onDelete(index)
+                        if (canDelete) onDelete(index)
                       }}
-                      className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-sm text-red-600 hover:bg-red-50"
+                      title="Remover"
                     >
                       🗑
                     </button>
+
+                    {/* caret */}
+                    <div className="ml-1 text-sm text-[rgb(var(--text-faint))]">
+                      {isExpanded ? "▾" : "▸"}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="shrink-0 text-sm text-[rgb(var(--text-faint))]">
+                    {isExpanded ? "▾" : "▸"}
                   </div>
                 )}
               </div>
 
-              {/* PROGRESSO */}
-              <div className="px-4 pb-3">
-                <div className="h-2 w-full rounded-full bg-black/5 overflow-hidden">
-                  <div
-                    className="h-full rounded-full transition-all duration-200"
-                    style={{
-                      width: `${pct}%`,
-                      background:
-                        "linear-gradient(90deg, rgb(var(--accent)), rgb(var(--accent-strong)))",
-                    }}
-                  />
+              {/* Progress bar */}
+              {(isProcessing || isActive) && (
+                <div className="px-4 pb-3">
+                  <div className="h-2 w-full rounded-full bg-black/5 overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-200"
+                      style={{
+                        width: `${pct}%`,
+                        background:
+                          "linear-gradient(90deg, rgb(var(--accent)), rgb(var(--accent-strong)))",
+                      }}
+                    />
+                  </div>
+
+                  {isProcessing ? (
+                    <div className="mt-1 text-xs text-[rgb(var(--text-muted))]">
+                      Preparando show… {pct}%
+                    </div>
+                  ) : null}
                 </div>
-              </div>
+              )}
 
               {/* EXPANSÃO SUAVE */}
               <div
                 className={`
                   grid transition-all duration-300 ease-in-out
-                  ${isExpanded ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"}
+                  ${
+                    isExpanded
+                      ? "grid-rows-[1fr] opacity-100"
+                      : "grid-rows-[0fr] opacity-0"
+                  }
                 `}
               >
                 <div
@@ -203,14 +308,14 @@ export default function PlaylistView({
                   `}
                 >
                   <div className="rounded-xl border border-[rgb(var(--border))] bg-white p-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm text-[rgb(var(--text-main))]">
                       <div>
                         <span className="font-semibold">Música:</span>{" "}
                         {step.trackTitle || "—"}
                       </div>
                       <div>
-                        <span className="font-semibold">Gênero:</span>{" "}
-                        {step.genre || "—"}
+                        <span className="font-semibold">Arquivo:</span>{" "}
+                        {step.audioFile || "—"}
                       </div>
                       <div>
                         <span className="font-semibold">Holograma:</span>{" "}
@@ -226,22 +331,24 @@ export default function PlaylistView({
                       </div>
                     </div>
 
-                    {mode === "operator" && (
+                    {mode === "operator" ? (
                       <div className="mt-4 flex justify-end gap-2">
                         <Button
                           variant="secondary"
                           onClick={() => onEdit(index)}
+                          disabled={!canEdit}
                         >
                           Editar Step
                         </Button>
                         <Button
                           variant="primary"
                           onClick={() => onPlayStep(index)}
+                          disabled={!canPlay}
                         >
                           ▶ Executar Agora
                         </Button>
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               </div>
