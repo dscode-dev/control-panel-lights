@@ -59,19 +59,35 @@ export default function Page() {
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null);
   const [draft, setDraft] = useState<PlaylistStep>(emptyDraft);
 
-  async function handleCreateStep(payload: {
-    title: string;
-    type: string;
-    palette: string;
-    genre: string;
-    youtubeUrl: string;
-    useAI: boolean;
-  }) {
+  async function handleCreateStep(formData: FormData) {
     // fecha modal imediatamente
     setAddOpen(false);
 
-    // backend cria step em "processing"
-    await api.addStepFromYoutube(payload);
+    const type = String(formData.get("type"));
+
+    if (type === "presentation") {
+      await api.addPresentation(formData);
+      return;
+    }
+
+    if (type === "music") {
+      await api.addStepFromYoutube({
+        title: String(formData.get("title")),
+        type: "music",
+        palette: String(formData.get("palette")),
+        genre: String(formData.get("genre") || ""),
+        youtubeUrl: String(formData.get("youtubeUrl")),
+        useAI: Boolean(formData.get("useAI")),
+      });
+      return;
+    }
+
+    if (type === "pause") {
+      await api.addPause({
+        title: String(formData.get("title")),
+        durationMs: Number(formData.get("durationMs") || 3000),
+      });
+    }
   }
 
   // Keep a ref to avoid stale closures
@@ -346,24 +362,15 @@ export default function Page() {
   );
 }
 
-function StepForm({
-  onSubmit,
-}: {
-  onSubmit: (payload: {
-    title: string;
-    type: string;
-    palette: string;
-    genre: string;
-    youtubeUrl: string;
-    useAI: boolean;
-  }) => void;
-}) {
-  const [title, setTitle] = useState("");
-  const [type, setType] = useState("music");
-  const [palette, setPalette] = useState("blue");
-  const [genre, setGenre] = useState("");
-  const [youtubeUrl, setYoutubeUrl] = useState("");
+function StepForm({ onSubmit }: { onSubmit: (data: FormData) => void }) {
+  const [type, setType] = useState<"music" | "presentation" | "pause">("music");
   const [useAI, setUseAI] = useState(true);
+
+  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    onSubmit(formData);
+  }
 
   const input =
     "w-full rounded-xl border border-[rgb(var(--border))] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[rgba(37,99,235,0.25)]";
@@ -371,89 +378,125 @@ function StepForm({
     "text-xs font-semibold tracking-widest text-[rgb(var(--text-faint))] uppercase";
 
   return (
-    <form
-      className="space-y-4"
-      onSubmit={(e) => {
-        e.preventDefault();
-        onSubmit({ title, type, palette, genre, youtubeUrl, useAI });
-      }}
-    >
+    <form onSubmit={handleSubmit} className="space-y-4">
+      {/* TÍTULO */}
       <div>
         <div className={label}>Nome do Step</div>
         <input
+          name="title"
           className={input}
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="Ex: Pagode Pesado"
+          placeholder="Ex: Chamar galera"
           required
         />
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div>
-          <div className={label}>Tipo</div>
-          <select
-            className={input}
-            value={type}
-            onChange={(e) => setType(e.target.value)}
-          >
-            <option value="music">music</option>
-            <option value="presentation">presentation</option>
-            <option value="pause">pause</option>
-          </select>
-        </div>
-
-        <div>
-          <div className={label}>Paleta</div>
-          <select
-            className={input}
-            value={palette}
-            onChange={(e) => setPalette(e.target.value)}
-          >
-            <option value="blue">blue</option>
-            <option value="purple">purple</option>
-            <option value="green">green</option>
-            <option value="orange">orange</option>
-          </select>
-        </div>
-      </div>
-
+      {/* TIPO */}
       <div>
-        <div className={label}>Gênero</div>
-        <input
+        <div className={label}>Tipo</div>
+        <select
+          name="type"
           className={input}
-          value={genre}
-          onChange={(e) => setGenre(e.target.value)}
-          placeholder="Ex: Pagode"
-        />
+          value={type}
+          onChange={(e) => setType(e.target.value as any)}
+        >
+          <option value="music">music</option>
+          <option value="presentation">presentation</option>
+          <option value="pause">pause</option>
+        </select>
       </div>
 
+      {/* PALETA */}
       <div>
-        <div className={label}>Link do YouTube</div>
-        <input
-          className={input}
-          value={youtubeUrl}
-          onChange={(e) => setYoutubeUrl(e.target.value)}
-          placeholder="https://youtube.com/..."
-          required
-        />
-        <p className="mt-1 text-xs text-[rgb(var(--text-muted))]">
-          O áudio será baixado e analisado automaticamente
-        </p>
+        <div className={label}>Paleta</div>
+        <select name="palette" className={input}>
+          <option value="blue">blue</option>
+          <option value="purple">purple</option>
+          <option value="green">green</option>
+          <option value="orange">orange</option>
+        </select>
       </div>
 
-      <div className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          checked={useAI}
-          onChange={(e) => setUseAI(e.target.checked)}
-        />
-        <span className="text-sm text-[rgb(var(--text-muted))]">
-          Usar IA para otimizar o show de LEDs
-        </span>
-      </div>
+      {/* MUSIC */}
+      {type === "music" && (
+        <>
+          <div>
+            <div className={label}>Gênero</div>
+            <input name="genre" className={input} placeholder="Ex: Pagode" />
+          </div>
 
-      <div className="flex justify-end gap-2 pt-4">
+          <div>
+            <div className={label}>Link do YouTube</div>
+            <input
+              name="youtubeUrl"
+              className={input}
+              placeholder="https://youtube.com/..."
+              required
+            />
+          </div>
+
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              name="useAI"
+              checked={useAI}
+              onChange={(e) => setUseAI(e.target.checked)}
+            />
+            Usar IA para otimizar o show de LEDs
+          </label>
+        </>
+      )}
+
+      {/* PRESENTATION */}
+      {type === "presentation" && (
+        <>
+          <div>
+            <div className={label}>Arquivo de áudio</div>
+            <input
+              type="file"
+              name="audioFile"
+              accept=".mp3,.wav"
+              className={input}
+              required
+            />
+            <p className="mt-1 text-xs text-[rgb(var(--text-muted))]">
+              Áudio local usado na apresentação
+            </p>
+          </div>
+
+          <div>
+            <div className={label}>Sequência de LEDs (JSON)</div>
+            <input
+              type="file"
+              name="ledSequence"
+              accept=".json"
+              className={input}
+              required
+            />
+            <p className="mt-1 text-xs text-[rgb(var(--text-muted))]">
+              JSON no formato:
+              <code className="ml-1 text-[rgb(var(--text-main))]">
+                timeline → atMs / cmd / target / payload
+              </code>
+            </p>
+          </div>
+        </>
+      )}
+
+      {/* PAUSE */}
+      {type === "pause" && (
+        <div>
+          <div className={label}>Duração (ms)</div>
+          <input
+            type="number"
+            name="durationMs"
+            className={input}
+            defaultValue={3000}
+          />
+        </div>
+      )}
+
+      {/* SUBMIT */}
+      <div className="flex justify-end pt-4">
         <Button variant="primary" type="submit">
           Criar Step
         </Button>

@@ -45,13 +45,6 @@ export async function getPlaylist() {
   return request<{ steps: any[] }>("/playlist")
 }
 
-export async function addStep(step: any) {
-  return request<void>("/playlist/add", {
-    method: "POST",
-    body: JSON.stringify(step),
-  })
-}
-
 export async function editStep(index: number, step: any) {
   return request<void>(`/playlist/edit/${index}`, {
     method: "PUT",
@@ -110,4 +103,62 @@ export async function addStepFromYoutube(payload: {
     body: JSON.stringify(payload),
   })
 }
+
+export async function addStep(formData: FormData) {
+  const res = await fetch(
+    `${API_BASE}/playlist/add`,
+    {
+      method: "POST",
+      body: formData,
+    }
+  )
+
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || "Erro ao criar step")
+  }
+
+  return res.json() as Promise<{ stepId: string }>
+}
+
+export async function addPresentation(formData: FormData) {
+  const res = await fetch(
+    `${API_BASE}/playlist/add-presentation`,
+    {
+      method: "POST",
+      body: formData,
+    }
+  )
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "")
+    throw new Error(text || "Erro ao criar apresentação")
+  }
+
+  return res.json() as Promise<{ stepId: string }>
+}
+
+export async function addPause(payload: {
+  title: string
+  durationMs: number
+}) {
+  const res = await fetch(
+    `${API_BASE}/playlist/add-pause`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }
+  )
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "")
+    throw new Error(text || "Erro ao criar pause")
+  }
+
+  return res.json() as Promise<{ stepId: string }>
+}
+
 
