@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Header from "../components/Header";
 import PlayerControls from "../components/PlayerControls";
 import StatusPanel from "../components/StatusPanel";
@@ -8,44 +8,10 @@ import Modal from "../components/Modal";
 import Button from "../components/Button";
 import { UiMode } from "../utils/uiMode";
 import { PlaylistStep } from "../types/playlist";
+import * as api from "../services/api";
+import { connectSocket } from "../services/socket";
 import PlaylistView from "@/components/PaylistView";
-import { EspNode } from "../types/playlist";
 import EspStatusPanel from "@/components/ESPStatusPanel";
-
-const espNodes: EspNode[] = [
-  {
-    id: "right",
-    name: "ESP Direita",
-    status: "online",
-    lastPing: "agora",
-    routes: ["VU", "Contorno"],
-  },
-  {
-    id: "left",
-    name: "ESP Esquerda",
-    status: "online",
-    lastPing: "2s atrás",
-    routes: ["VU", "Contorno"],
-  },
-  {
-    id: "portal",
-    name: "ESP Portal",
-    status: "offline",
-    lastPing: "—",
-    routes: ["Portal", "Estrelas"],
-  },
-  {
-    id: "hologram",
-    name: "ESP Holograma",
-    status: "online",
-    lastPing: "1s atrás",
-    routes: ["Motor", "Animação", "LEDs"],
-  },
-];
-
-function uid() {
-  return Math.random().toString(16).slice(2);
-}
 
 function formatMs(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -54,201 +20,155 @@ function formatMs(ms: number) {
   return `${mm}:${ss}`;
 }
 
-const initialSteps: PlaylistStep[] = [
-  {
-    id: "s1",
-    title: "Abertura • Hype",
-    type: "presentation",
-    durationMs: 2500,
-    bpm: 128,
-    palette: "blue",
-    trackTitle: "—",
-    genre: "—",
-    audioFile: "voice_intro.mp3",
-    hologram: "hype",
-    leds: "contorno + brilho",
-    portal: "pulse",
-    esp: [
-      { target: "portal", type: "portal_mode", payload: { mode: "pulse" } },
-      { target: "broadcast", type: "set_palette", payload: { name: "blue" } },
-    ],
-  },
-  {
-    id: "s2",
-    title: "Pagode Pesado",
-    type: "music",
-    durationMs: 18000,
-    bpm: 128,
-    palette: "blue",
-    trackTitle: "Set Pagode 01",
-    genre: "Pagode",
-    audioFile: "pagode_01.mp3",
-    hologram: "pagode_dance",
-    leds: "VU + contornos",
-    portal: "steady",
-    esp: [
-      { target: "right", type: "set_mode", payload: { mode: "vu" } },
-      { target: "left", type: "set_mode", payload: { mode: "vu" } },
-      {
-        target: "hologram",
-        type: "hologram_behavior",
-        payload: { behavior: "pagode_dance" },
-      },
-    ],
-  },
-  {
-    id: "s3",
-    title: "Chamar Galera",
-    type: "presentation",
-    durationMs: 3500,
-    bpm: 120,
-    palette: "purple",
-    trackTitle: "—",
-    genre: "—",
-    audioFile: "call_crowd.mp3",
-    hologram: "chamar_galera",
-    leds: "estrelas/flocos",
-    portal: "pulse",
-    esp: [
-      { target: "portal", type: "portal_mode", payload: { mode: "pulse" } },
-      {
-        target: "hologram",
-        type: "hologram_behavior",
-        payload: { behavior: "chamar_galera" },
-      },
-    ],
-  },
-];
+const emptyDraft: PlaylistStep = {
+  id: "",
+  title: "",
+  type: "music",
+  durationMs: 12000,
+  bpm: 120,
+  palette: "blue",
+  trackTitle: "",
+  genre: "",
+  audioFile: "",
+  hologram: "",
+  leds: "",
+  portal: "",
+  esp: [],
+};
 
 export default function Page() {
   const [mode, setMode] = useState<UiMode>("operator");
 
-  const [steps, setSteps] = useState<PlaylistStep[]>(initialSteps);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
+  // Data from backend
+  const [steps, setSteps] = useState<PlaylistStep[]>([]);
+  const [espNodes, setEspNodes] = useState<api.EspNode[]>([]);
 
-  // timer de execução (simulação)
-  const [elapsedMs, setElapsedMs] = useState(0);
+  const [status, setStatus] = useState<api.PlayerStatus>({
+    isPlaying: false,
+    activeIndex: 0,
+    elapsedMs: 0,
+    bpm: 120,
+    palette: "blue",
+    currentTitle: "—",
+    currentType: "—",
+  });
 
-  // modais
+  // Modals
   const [addOpen, setAddOpen] = useState(false);
   const [editIndex, setEditIndex] = useState<number | null>(null);
   const [deleteIndex, setDeleteIndex] = useState<number | null>(null);
+  const [draft, setDraft] = useState<PlaylistStep>(emptyDraft);
 
-  // form state (add/edit)
-  const [draft, setDraft] = useState<PlaylistStep>(() => ({
-    id: uid(),
-    title: "",
-    type: "music",
-    durationMs: 12000,
-    bpm: 128,
-    palette: "blue",
-    trackTitle: "",
-    genre: "",
-    audioFile: "",
-    hologram: "",
-    leds: "",
-    portal: "",
-    esp: [],
-  }));
-
-  const current = steps[activeIndex] || steps[0];
-  const bpm = current?.bpm || 120;
-
-  const progress = current?.durationMs ? elapsedMs / current.durationMs : 0;
-  const paletteName = current?.palette || "blue";
-
-  // tick de execução
+  // Keep a ref to avoid stale closures
+  const statusRef = useRef(status);
   useEffect(() => {
-    if (!isPlaying) return;
-    const t = setInterval(() => {
-      setElapsedMs((ms) => ms + 200);
-    }, 200);
-    return () => clearInterval(t);
-  }, [isPlaying]);
+    statusRef.current = status;
+  }, [status]);
 
-  // quando termina step -> próximo
+  // Initial load + periodic refresh fallback
   useEffect(() => {
-    if (!isPlaying) return;
-    if (!current) return;
-    if (elapsedMs >= current.durationMs) {
-      // auto-skip
-      setElapsedMs(0);
-      setActiveIndex((i) => {
-        const next = i + 1;
-        if (next >= steps.length) return 0;
-        return next;
-      });
+    let mounted = true;
+
+    async function loadAll() {
+      try {
+        const [pl, st, esp] = await Promise.all([
+          api.getPlaylist(),
+          api.getStatus(),
+          api.getEspStatus(),
+        ]);
+
+        if (!mounted) return;
+        setSteps(pl.steps as PlaylistStep[]);
+        setStatus(st);
+        setEspNodes(esp.nodes);
+      } catch (e) {
+        // leave UI as-is; optionally show toast later
+        console.error(e);
+      }
     }
-  }, [elapsedMs, isPlaying, current, steps.length]);
+
+    loadAll();
+
+    // fallback polling (production safe)
+    const interval = setInterval(loadAll, 1500);
+
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, []);
+
+  // WebSocket realtime (overrides polling behavior smoothly)
+  useEffect(() => {
+    const sock = connectSocket((msg) => {
+      // backend can emit:
+      // { type: "status", data: PlayerStatus }
+      // { type: "playlist", data: { steps: PlaylistStep[] } }
+      // { type: "esp", data: { nodes: EspNode[] } }
+      if (!msg?.type) return;
+
+      if (msg.type === "status" && msg.data) setStatus(msg.data);
+      if (msg.type === "playlist" && msg.data?.steps) setSteps(msg.data.steps);
+      if (msg.type === "esp" && msg.data?.nodes) setEspNodes(msg.data.nodes);
+    });
+
+    return () => sock.close();
+  }, []);
+
+  const activeIndex = Math.max(
+    0,
+    Math.min(status.activeIndex, Math.max(steps.length - 1, 0))
+  );
+  const currentStep = steps[activeIndex];
+
+  const progress = currentStep?.durationMs
+    ? status.elapsedMs / currentStep.durationMs
+    : 0;
 
   function toggleMode() {
     setMode((m) => (m === "operator" ? "show" : "operator"));
   }
 
-  function play() {
-    setIsPlaying(true);
+  // ---------- Real actions (backend) ----------
+  async function onPlay() {
+    await api.play();
   }
 
-  function pause() {
-    setIsPlaying(false);
+  async function onPause() {
+    await api.pause();
   }
 
-  function skip() {
-    setElapsedMs(0);
-    setActiveIndex((i) => (i + 1 >= steps.length ? 0 : i + 1));
+  async function onSkip() {
+    await api.skip();
   }
 
-  function playStep(index: number) {
-    setActiveIndex(index);
-    setElapsedMs(0);
-    setIsPlaying(true);
+  async function onPlayStep(index: number) {
+    await api.playStep(index);
   }
 
-  // progress por item: só o ativo mostra progresso
-  function progressByIndex(index: number) {
-    if (index !== activeIndex) return 0;
-    return progress;
-  }
-
-  // --- MODAIS (AÇÕES REAIS) ---
+  // ---------- Modals actions ----------
   function openAdd() {
-    setDraft({
-      id: uid(),
-      title: "",
-      type: "music",
-      durationMs: 12000,
-      bpm: 128,
-      palette: "blue",
-      trackTitle: "",
-      genre: "",
-      audioFile: "",
-      hologram: "",
-      leds: "",
-      portal: "",
-      esp: [],
-    });
+    setDraft({ ...emptyDraft, id: "" });
     setAddOpen(true);
   }
 
-  function submitAdd() {
+  async function submitAdd() {
     if (!draft.title.trim()) return;
-    setSteps((prev) => [...prev, { ...draft, id: uid() }]);
+    await api.addStep(draft);
     setAddOpen(false);
   }
 
   function openEdit(index: number) {
     const s = steps[index];
+    if (!s) return;
     setDraft(JSON.parse(JSON.stringify(s)));
     setEditIndex(index);
   }
 
-  function submitEdit() {
+  async function submitEdit() {
     if (editIndex === null) return;
     if (!draft.title.trim()) return;
-    setSteps((prev) =>
-      prev.map((s, i) => (i === editIndex ? { ...draft } : s))
-    );
+    await api.editStep(editIndex, draft);
     setEditIndex(null);
   }
 
@@ -256,25 +176,23 @@ export default function Page() {
     setDeleteIndex(index);
   }
 
-  function confirmDelete() {
+  async function confirmDelete() {
     if (deleteIndex === null) return;
-    setSteps((prev) => prev.filter((_, i) => i !== deleteIndex));
-    // ajusta activeIndex se necessário
-    setActiveIndex((ai) => {
-      if (deleteIndex < ai) return Math.max(0, ai - 1);
-      if (deleteIndex === ai) return 0;
-      return ai;
-    });
-    setElapsedMs(0);
+    await api.deleteStep(deleteIndex);
     setDeleteIndex(null);
   }
 
-  // Layout: página mais bonita (hero + cards)
+  // progress per item
+  function getProgress(index: number) {
+    if (index !== activeIndex) return 0;
+    return progress;
+  }
+
   return (
     <main
       className={`min-h-screen ${mode === "show" ? "ui-show" : "ui-operator"}`}
     >
-      {/* background moderninho */}
+      {/* Background suave */}
       <div
         className="absolute inset-0 -z-10"
         style={{
@@ -283,20 +201,20 @@ export default function Page() {
         }}
       />
 
+      {/* Layout: quase tela inteira + padding mínimo */}
       <div className="px-4 py-4 space-y-4">
         <Header mode={mode} onToggleMode={toggleMode} />
 
         <PlayerControls
           mode={mode}
-          isPlaying={isPlaying}
-          bpm={bpm}
-          onPlay={play}
-          onPause={pause}
-          onSkip={skip}
+          isPlaying={status.isPlaying}
+          bpm={status.bpm || 120}
+          onPlay={onPlay}
+          onPause={onPause}
+          onSkip={onSkip}
         />
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-          {/* Playlist maior */}
           <div className="lg:col-span-8">
             <PlaylistView
               steps={steps}
@@ -305,49 +223,44 @@ export default function Page() {
               onAdd={openAdd}
               onEdit={openEdit}
               onDelete={openDelete}
-              onPlayStep={playStep}
-              progressByIndex={progressByIndex}
+              onPlayStep={onPlayStep}
+              getProgress={getProgress}
             />
           </div>
 
-          {/* Status menor porém moderno */}
           <div className="lg:col-span-4 space-y-4">
             <StatusPanel
               mode={mode}
-              isPlaying={isPlaying}
-              currentTitle={current?.title || "—"}
-              currentType={current?.type || "—"}
-              bpm={bpm}
+              isPlaying={status.isPlaying}
+              currentTitle={status.currentTitle || currentStep?.title || "—"}
+              currentType={status.currentType || currentStep?.type || "—"}
+              bpm={status.bpm || currentStep?.bpm || 120}
               progress={progress}
-              elapsedLabel={formatMs(elapsedMs)}
-              totalLabel={formatMs(current?.durationMs || 0)}
-              paletteName={paletteName}
+              elapsedLabel={formatMs(status.elapsedMs || 0)}
+              totalLabel={formatMs(currentStep?.durationMs || 0)}
+              paletteName={status.palette || currentStep?.palette || "blue"}
             />
-            <EspStatusPanel nodes={espNodes} />
+
+            <EspStatusPanel nodes={espNodes as any} />
           </div>
         </div>
       </div>
 
-      {/* MODAL ADD */}
+      {/* ADD MODAL */}
       <Modal
         open={addOpen}
-        title="Adicionar Step"
+        title="Adicionar Step a partir do YouTube"
         onClose={() => setAddOpen(false)}
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setAddOpen(false)}>
-              Cancelar
-            </Button>
-            <Button variant="primary" onClick={submitAdd}>
-              Salvar
-            </Button>
-          </>
-        }
       >
-        <StepForm draft={draft} setDraft={setDraft} />
+        <StepForm
+          onSubmit={async (payload) => {
+            await api.addStepFromYoutube(payload);
+            setAddOpen(false);
+          }}
+        />
       </Modal>
 
-      {/* MODAL EDIT */}
+      {/* EDIT MODAL */}
       <Modal
         open={editIndex !== null}
         title="Editar Step"
@@ -366,7 +279,7 @@ export default function Page() {
         <StepForm draft={draft} setDraft={setDraft} />
       </Modal>
 
-      {/* MODAL DELETE */}
+      {/* DELETE MODAL */}
       <Modal
         open={deleteIndex !== null}
         title="Confirmar remoção"
@@ -402,148 +315,128 @@ export default function Page() {
   );
 }
 
-// --- Form do step (local) ---
 function StepForm({
-  draft,
-  setDraft,
+  onSubmit,
 }: {
-  draft: PlaylistStep;
-  setDraft: (v: PlaylistStep) => void;
+  onSubmit: (payload: {
+    title: string;
+    type: string;
+    palette: string;
+    genre: string;
+    youtubeUrl: string;
+    useAI: boolean;
+  }) => void;
 }) {
-  const inputBase =
-    "w-full rounded-xl border border-[rgb(var(--border))] bg-white px-3 py-2 text-sm text-[rgb(var(--text-main))] outline-none focus:ring-2";
+  const [title, setTitle] = useState("");
+  const [type, setType] = useState("music");
+  const [palette, setPalette] = useState("blue");
+  const [genre, setGenre] = useState("");
+  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [useAI, setUseAI] = useState(true);
+
+  const input =
+    "w-full rounded-xl border border-[rgb(var(--border))] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[rgba(37,99,235,0.25)]";
   const label =
     "text-xs font-semibold tracking-widest text-[rgb(var(--text-faint))] uppercase";
 
   return (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-      <div className="md:col-span-2">
-        <div className={label}>Título</div>
+    <form
+      className="space-y-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSubmit({ title, type, palette, genre, youtubeUrl, useAI });
+      }}
+    >
+      <div>
+        <div className={label}>Nome do Step</div>
         <input
-          className={`${inputBase} focus:ring-[rgba(37,99,235,0.25)]`}
-          value={draft.title}
-          onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-          placeholder="Ex: Pagode Pesado / Chamar Galera"
+          className={input}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Ex: Pagode Pesado"
+          required
         />
       </div>
 
-      <div>
-        <div className={label}>Tipo</div>
-        <select
-          className={`${inputBase} focus:ring-[rgba(37,99,235,0.25)]`}
-          value={draft.type}
-          onChange={(e) => setDraft({ ...draft, type: e.target.value as any })}
-        >
-          <option value="music">music</option>
-          <option value="presentation">presentation</option>
-          <option value="pause">pause</option>
-        </select>
-      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <div className={label}>Tipo</div>
+          <select
+            className={input}
+            value={type}
+            onChange={(e) => setType(e.target.value)}
+          >
+            <option value="music">music</option>
+            <option value="presentation">presentation</option>
+            <option value="pause">pause</option>
+          </select>
+        </div>
 
-      <div>
-        <div className={label}>Paleta</div>
-        <select
-          className={`${inputBase} focus:ring-[rgba(37,99,235,0.25)]`}
-          value={draft.palette || "blue"}
-          onChange={(e) =>
-            setDraft({ ...draft, palette: e.target.value as any })
-          }
-        >
-          <option value="blue">blue</option>
-          <option value="purple">purple</option>
-          <option value="green">green</option>
-          <option value="orange">orange</option>
-        </select>
-      </div>
-
-      <div>
-        <div className={label}>Duração (ms)</div>
-        <input
-          type="number"
-          className={`${inputBase} focus:ring-[rgba(37,99,235,0.25)]`}
-          value={draft.durationMs}
-          onChange={(e) =>
-            setDraft({ ...draft, durationMs: Number(e.target.value || 0) })
-          }
-        />
-      </div>
-
-      <div>
-        <div className={label}>BPM</div>
-        <input
-          type="number"
-          className={`${inputBase} focus:ring-[rgba(37,99,235,0.25)]`}
-          value={draft.bpm || 120}
-          onChange={(e) =>
-            setDraft({ ...draft, bpm: Number(e.target.value || 0) })
-          }
-        />
-      </div>
-
-      <div>
-        <div className={label}>Track title</div>
-        <input
-          className={`${inputBase} focus:ring-[rgba(37,99,235,0.25)]`}
-          value={draft.trackTitle || ""}
-          onChange={(e) => setDraft({ ...draft, trackTitle: e.target.value })}
-          placeholder="Ex: Set Pagode 01"
-        />
+        <div>
+          <div className={label}>Paleta</div>
+          <select
+            className={input}
+            value={palette}
+            onChange={(e) => setPalette(e.target.value)}
+          >
+            <option value="blue">blue</option>
+            <option value="purple">purple</option>
+            <option value="green">green</option>
+            <option value="orange">orange</option>
+          </select>
+        </div>
       </div>
 
       <div>
         <div className={label}>Gênero</div>
         <input
-          className={`${inputBase} focus:ring-[rgba(37,99,235,0.25)]`}
-          value={draft.genre || ""}
-          onChange={(e) => setDraft({ ...draft, genre: e.target.value })}
+          className={input}
+          value={genre}
+          onChange={(e) => setGenre(e.target.value)}
           placeholder="Ex: Pagode"
         />
       </div>
 
-      <div className="md:col-span-2">
-        <div className={label}>Arquivo de áudio (local)</div>
-        <input
-          className={`${inputBase} focus:ring-[rgba(37,99,235,0.25)]`}
-          value={draft.audioFile || ""}
-          onChange={(e) => setDraft({ ...draft, audioFile: e.target.value })}
-          placeholder="Ex: pagode_01.mp3"
-        />
-      </div>
-
       <div>
-        <div className={label}>Holograma</div>
+        <div className={label}>Link do YouTube</div>
         <input
-          className={`${inputBase} focus:ring-[rgba(37,99,235,0.25)]`}
-          value={draft.hologram || ""}
-          onChange={(e) => setDraft({ ...draft, hologram: e.target.value })}
-          placeholder="Ex: pagode_dance"
+          className={input}
+          value={youtubeUrl}
+          onChange={(e) => setYoutubeUrl(e.target.value)}
+          placeholder="https://youtube.com/..."
+          required
         />
+        <p className="mt-1 text-xs text-[rgb(var(--text-muted))]">
+          O áudio será baixado e analisado automaticamente
+        </p>
       </div>
 
-      <div>
-        <div className={label}>LEDs</div>
+      <div className="flex items-center gap-2">
         <input
-          className={`${inputBase} focus:ring-[rgba(37,99,235,0.25)]`}
-          value={draft.leds || ""}
-          onChange={(e) => setDraft({ ...draft, leds: e.target.value })}
-          placeholder="Ex: VU + contornos"
+          type="checkbox"
+          checked={useAI}
+          onChange={(e) => setUseAI(e.target.checked)}
         />
+        <span className="text-sm text-[rgb(var(--text-muted))]">
+          Usar IA para otimizar o show de LEDs
+        </span>
       </div>
 
-      <div className="md:col-span-2">
-        <div className={label}>Portal</div>
-        <input
-          className={`${inputBase} focus:ring-[rgba(37,99,235,0.25)]`}
-          value={draft.portal || ""}
-          onChange={(e) => setDraft({ ...draft, portal: e.target.value })}
-          placeholder="Ex: pulse / steady"
-        />
+      <div className="flex justify-end gap-2 pt-4">
+        <Button variant="primary" type="submit">
+          Criar Step
+        </Button>
       </div>
-
-      <div className="md:col-span-2 text-xs text-[rgb(var(--text-faint))]">
-        Eventos ESP serão editáveis depois (vamos colocar um editor visual em
-        seguida).
-      </div>
-    </div>
+    </form>
   );
 }
+
+// Também teremos no formulario, mas somente readonly, os campos que serao preenchidos pelo sistema. Eles sao:
+// Duração
+// BPM
+// TrackTitle
+// Events
+// Leds
+// Hologramas
+
+// Obs. Em todos os casos todos os leds devem receber comandos.

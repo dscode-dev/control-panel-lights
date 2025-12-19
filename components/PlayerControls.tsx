@@ -23,7 +23,7 @@ export default function PlayerControls({
 
   return (
     <section className="rounded-2xl border border-[rgb(var(--border))] bg-[rgb(var(--surface))] shadow-sm">
-      <div className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="text-xs font-semibold tracking-widest text-[rgb(var(--text-faint))] uppercase">
             Controles
@@ -32,7 +32,7 @@ export default function PlayerControls({
             Player do Show
           </div>
           <div className="mt-1 text-sm text-[rgb(var(--text-muted))]">
-            Play/Pause/Skip (simulação local) • depois liga no backend
+            Ações em tempo real (backend)
           </div>
         </div>
 
@@ -58,24 +58,27 @@ export default function PlayerControls({
         </div>
       </div>
 
-      <div className="flex items-center justify-between border-t border-[rgb(var(--border))] px-5 py-3">
+      <div className="flex items-center justify-between border-t border-[rgb(var(--border))] px-4 py-3">
         <div className="flex items-center gap-3 text-sm text-[rgb(var(--text-muted))]">
           <span className="inline-flex items-center gap-2">
             <span
               className={`h-2 w-2 rounded-full ${
-                isPlaying ? "bg-[rgb(var(--success))]" : "bg-[rgb(var(--text-faint))]"
+                isPlaying ? "bg-green-500" : "bg-[rgb(var(--text-faint))]"
               }`}
             />
             {isPlaying ? "Executando" : "Pausado"}
           </span>
           <span className="text-[rgb(var(--text-faint))]">•</span>
           <span>
-            BPM <span className="font-semibold text-[rgb(var(--text-main))]">{bpm}</span>
+            BPM{" "}
+            <span className="font-semibold text-[rgb(var(--text-main))]">
+              {bpm}
+            </span>
           </span>
         </div>
 
         <div className="text-xs text-[rgb(var(--text-faint))]">
-          Dica: duplo clique em um step toca direto
+          Duplo clique no step toca direto
         </div>
       </div>
     </section>
