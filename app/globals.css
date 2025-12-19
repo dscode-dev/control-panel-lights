@@ -1,26 +1,151 @@
 @import "tailwindcss";
 
+@import "tailwindcss";
+
+@import "tailwindcss";
+
+/* LIGHT TECH (azul elegante, branco dominante) */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Backgrounds */
+  --bg-main: 246 248 252; /* fundo geral */
+  --surface: 255 255 255; /* cards/painéis */
+  --surface-2: 242 246 255; /* hover/soft */
+
+  /* Text */
+  --text-main: 15 23 42; /* slate-900 */
+  --text-muted: 71 85 105; /* slate-600 */
+  --text-faint: 148 163 184; /* slate-400 */
+
+  /* Brand (blue) */
+  --accent: 37 99 235; /* blue-600 */
+  --accent-strong: 29 78 216; /* blue-700 */
+  --accent-soft: 219 234 254; /* blue-100 */
+
+  /* Borders / shadows */
+  --border: 226 232 240; /* slate-200 */
+  --shadow: 15 23 42; /* shadow base */
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* base */
+html,
+body {
+  height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: rgb(var(--bg-main));
+  color: rgb(var(--text-main));
+}
+
+@keyframes soft-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(var(--accent), 0.25);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(var(--accent), 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(var(--accent), 0);
+  }
+}
+
+@keyframes glow {
+  0% {
+    box-shadow: 0 0 8px rgba(var(--accent), 0.25);
+  }
+  50% {
+    box-shadow: 0 0 18px rgba(var(--accent), 0.45);
+  }
+  100% {
+    box-shadow: 0 0 8px rgba(var(--accent), 0.25);
+  }
+}
+
+/* suaviza animações em telas grandes */
+* {
+  -webkit-font-smoothing: antialiased;
+}
+
+/* SHOW MODE */
+:fullscreen body {
+  background-color: rgb(var(--bg-main));
+}
+
+:fullscreen .show-panel {
+  background: linear-gradient(
+    180deg,
+    rgba(var(--bg-panel), 0.95),
+    rgba(var(--bg-main), 1)
+  );
+  border: none;
+}
+
+:fullscreen ::-webkit-scrollbar {
+  display: none;
+}
+
+:fullscreen * {
+  user-select: none;
+}
+
+@keyframes step-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes step-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0.6;
+    transform: translateY(-4px);
+  }
+}
+
+/* === PALETAS === */
+
+.palette-blue {
+  --accent: 37 99 235;
+  --accent-strong: 29 78 216;
+  --accent-soft: 219 234 254;
+}
+
+.palette-purple {
+  --accent: 124 58 237;
+  --accent-strong: 109 40 217;
+  --accent-soft: 237 233 254;
+}
+
+.palette-green {
+  --accent: 22 163 74;
+  --accent-strong: 21 128 61;
+  --accent-soft: 220 252 231;
+}
+
+.palette-orange {
+  --accent: 234 88 12;
+  --accent-strong: 194 65 12;
+  --accent-soft: 255 237 213;
+}
+
+
+.show-panel {
+  transition: background-color 400ms ease, box-shadow 400ms ease,
+    border-color 400ms ease;
+}
+
+.ui-show {
+  cursor: none;
+}
+
+.ui-show button {
+  display: none;
 }
