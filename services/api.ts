@@ -1,11 +1,13 @@
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://localhost:8000"
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(
+  path: string,
+  init?: RequestInit
+): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
-      "Content-Type": "application/json",
       ...(init?.headers || {}),
     },
     cache: "no-store",
@@ -13,12 +15,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!res.ok) {
     const text = await res.text().catch(() => "")
-    throw new Error(`API ${res.status} ${res.statusText}: ${text || path}`)
+    throw new Error(text || `${res.status} ${res.statusText}`)
   }
 
-  // 204 no content
-  if (res.status === 204) return undefined as unknown as T
-  return (await res.json()) as T
+  if (res.status === 204) {
+    return undefined as unknown as T
+  }
+
+  return res.json() as Promise<T>
 }
 
 // ---------- Types returned by backend ----------
@@ -160,5 +164,3 @@ export async function addPause(payload: {
 
   return res.json() as Promise<{ stepId: string }>
 }
-
-
