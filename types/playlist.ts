@@ -28,5 +28,10 @@ export interface PlaylistStep {
   leds: string
   portal: string
 
+  youtubeUrl: string
+
   esp: EspCommand[]
+
+  // ✅ novo (opcional): texto de estágio do pipeline vindo do WS
+  pipelineStage?: string
 }

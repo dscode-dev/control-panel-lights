@@ -20,29 +20,25 @@ export default function StepForm({
   }
 
   const input =
-    "w-full rounded-xl border border-[rgb(var(--border))] bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-[rgba(37,99,235,0.25)]"
+    "w-full rounded-xl border border-gray-300/70 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-200"
 
   const label =
-    "text-xs font-semibold tracking-widest text-[rgb(var(--text-faint))] uppercase"
+    "text-xs font-semibold tracking-widest text-gray-500 uppercase"
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
-      {/* =======================
-          TITLE
-      ======================= */}
+      {/* TITLE */}
       <div>
         <div className={label}>Nome do Step</div>
         <input
           name="title"
           className={input}
-          placeholder="Ex: Troca de faixa / Chamar galera"
+          placeholder="Ex: Monólogo / Chamar galera"
           required
         />
       </div>
 
-      {/* =======================
-          TYPE
-      ======================= */}
+      {/* TYPE */}
       <div>
         <div className={label}>Tipo</div>
         <select
@@ -57,9 +53,7 @@ export default function StepForm({
         </select>
       </div>
 
-      {/* =======================
-          PALETTE
-      ======================= */}
+      {/* PALETTE */}
       <div>
         <div className={label}>Paleta</div>
         <select name="palette" className={input}>
@@ -70,9 +64,7 @@ export default function StepForm({
         </select>
       </div>
 
-      {/* =======================
-          MUSIC
-      ======================= */}
+      {/* ===== MUSIC ===== */}
       {type === "music" && (
         <>
           <div>
@@ -89,12 +81,12 @@ export default function StepForm({
             <input
               name="youtubeUrl"
               className={input}
-              placeholder="https://youtube.com/..."
+              placeholder="https://www.youtube.com/watch?v=..."
               required
             />
           </div>
 
-          <label className="flex items-center gap-2 text-sm text-[rgb(var(--text-main))]">
+          <label className="flex items-center gap-2 text-sm text-gray-700">
             <input
               type="checkbox"
               name="useAI"
@@ -106,13 +98,11 @@ export default function StepForm({
         </>
       )}
 
-      {/* =======================
-          PRESENTATION
-      ======================= */}
+      {/* ===== PRESENTATION ===== */}
       {type === "presentation" && (
         <>
           <div>
-            <div className={label}>Arquivo de áudio</div>
+            <div className={label}>Arquivo de Áudio</div>
             <input
               type="file"
               name="audioFile"
@@ -120,7 +110,7 @@ export default function StepForm({
               className={input}
               required
             />
-            <p className="mt-1 text-xs text-[rgb(var(--text-muted))]">
+            <p className="mt-1 text-xs text-gray-500">
               Áudio local usado na apresentação
             </p>
           </div>
@@ -134,16 +124,14 @@ export default function StepForm({
               className={input}
               required
             />
-            <p className="mt-1 text-xs text-[rgb(var(--text-muted))]">
-              JSON versionado com <code>timeline → atMs / cmd / target / payload</code>
+            <p className="mt-1 text-xs text-gray-500">
+              JSON versionado com timeline de comandos
             </p>
           </div>
         </>
       )}
 
-      {/* =======================
-          PAUSE
-      ======================= */}
+      {/* ===== PAUSE ===== */}
       {type === "pause" && (
         <div>
           <div className={label}>Duração (ms)</div>
@@ -157,9 +145,7 @@ export default function StepForm({
         </div>
       )}
 
-      {/* =======================
-          SUBMIT
-      ======================= */}
+      {/* SUBMIT */}
       <div className="flex justify-end pt-4">
         <Button variant="primary" type="submit">
           Criar Step

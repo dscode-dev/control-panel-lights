@@ -11,7 +11,7 @@ export default function Header({
   onToggleMode: () => void
 }) {
   return (
-    <header className="flex items-center justify-between">
+    <header className="flex items-center justify-between px-4 pt-4">
       <div>
         <div className="text-xs font-semibold tracking-widest text-[rgb(var(--text-faint))] uppercase">
           Painel

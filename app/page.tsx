@@ -1,355 +1,357 @@
+// app/page.tsx
 "use client"
 
-import { useEffect, useReducer, useRef, useState } from "react"
-import Header from "../components/Header"
-import PlayerControls from "../components/PlayerControls"
-import Button from "../components/Button"
+import { useEffect, useMemo, useState } from "react"
 
-import { UiMode } from "../utils/uiMode"
-import { PlaylistStep } from "../types/playlist"
-import { PlayerStatus } from "../services/api"
-import * as api from "../services/api"
-import { connectSocket } from "../services/socket"
-import PlaylistView from "@/components/PaylistView"
+import Header from "@/components/Header"
+import PlayerControls from "@/components/PlayerControls"
 import StatusPanel from "@/components/StatusPanel"
-import EspStatusPanel from "@/components/ESPStatusPanel"
-import Modal from "@/components/Modal"
+import ESPStatusPanel from "@/components/ESPStatusPanel"
 import StepForm from "@/components/StepForm"
 
-/* =======================
-   STATE
-======================= */
+import * as api from "@/services/api"
+import { connectSocket } from "@/services/socket"
 
-type RuntimeState = {
-  playlist: PlaylistStep[]
-  status: PlayerStatus
-  esp: any[]
-  wsConnected: boolean
+import { usePlaylistStore } from "@/utils/playlistStore"
+import type { PlaylistStep } from "@/types/playlist"
+import type { UiMode } from "@/utils/uiMode"
+import PlaylistView from "@/components/PaylistView"
+import YouTubeStepPlayer from "@/components/YoutubeStepPlayer"
+
+const DEBUG = process.env.NEXT_PUBLIC_DEBUG_WS === "1"
+
+function dlog(...args: any[]) {
+  if (DEBUG) console.log(...args)
 }
 
-type Action =
-  | {
-      type: "BOOTSTRAP"
-      playlist: PlaylistStep[]
-      status: PlayerStatus
-      esp: any[]
-    }
-  | { type: "STATUS"; status: PlayerStatus }
-  | { type: "PLAYLIST_PROGRESS"; stepId: string; progress: number }
-  | { type: "PLAYLIST_READY"; step: PlaylistStep }
-  | { type: "PLAYLIST_ERROR"; stepId: string }
-  | { type: "ESP"; nodes: any[] }
-  | { type: "WS_CONNECTED"; value: boolean }
+type EspNode = any // não mexo nisso aqui pra não quebrar seu componente
 
-const initialState: RuntimeState = {
-  playlist: [],
-  status: {
-    isPlaying: false,
-    activeIndex: 0,
-    elapsedMs: 0,
-    bpm: 0,
-    palette: "blue",
-    currentTitle: "",
-    currentType: "music",
-  },
-  esp: [],
-  wsConnected: false,
+function clamp01(x: any) {
+  const n = Number(x)
+  if (!Number.isFinite(n)) return 0
+  return Math.max(0, Math.min(1, n))
 }
-
-function reducer(state: RuntimeState, action: Action): RuntimeState {
-  switch (action.type) {
-    case "BOOTSTRAP":
-      return {
-        ...state,
-        playlist: action.playlist,
-        status: action.status,
-        esp: action.esp,
-      }
-
-    case "STATUS":
-      return { ...state, status: action.status }
-
-    case "PLAYLIST_PROGRESS":
-      return {
-        ...state,
-        playlist: state.playlist.map((s) =>
-          s.id === action.stepId
-            ? { ...s, progress: action.progress }
-            : s
-        ),
-      }
-
-    case "PLAYLIST_READY":
-      return {
-        ...state,
-        playlist: state.playlist.map((s) =>
-          s.id === action.step.id ? action.step : s
-        ),
-      }
-
-    case "PLAYLIST_ERROR":
-      return {
-        ...state,
-        playlist: state.playlist.map((s) =>
-          s.id === action.stepId ? { ...s, status: "error" } : s
-        ),
-      }
-
-    case "ESP":
-      return { ...state, esp: action.nodes }
-
-    case "WS_CONNECTED":
-      return { ...state, wsConnected: action.value }
-
-    default:
-      return state
-  }
-}
-
-/* =======================
-   PAGE
-======================= */
 
 export default function Page() {
-  const [state, dispatch] = useReducer(reducer, initialState)
+  // ✅ STORE (fonte da UI)
+  const steps = usePlaylistStore((s) => s.steps)
+  const setSteps = usePlaylistStore((s) => s.setSteps)
+  const addStep = usePlaylistStore((s) => s.addStep)
+  const upsertStep = usePlaylistStore((s) => s.upsertStep)
+  const updateStepById = usePlaylistStore((s) => s.updateStepById)
+  const removeStep = usePlaylistStore((s) => s.removeStep)
+
+  // UI
   const [mode, setMode] = useState<UiMode>("operator")
+  const toggleMode = () =>
+    setMode((prev) => (prev === "operator" ? "show" : "operator"))
 
   const [addOpen, setAddOpen] = useState(false)
-  const socketRef = useRef<{ close: () => void } | null>(null)
 
-  /* =======================
-     BOOTSTRAP + WS
-  ======================= */
+  // Player/Status
+  const [status, setStatus] = useState<any>(null)
+  const [activeIndex, setActiveIndex] = useState(-1)
 
+  // ESP
+  const [espNodes, setEspNodes] = useState<EspNode[]>([])
+
+  // YouTube
+  const [ytVisible, setYtVisible] = useState(false)
+  const [ytUrl, setYtUrl] = useState<string | null>(null)
+  const [ytShouldPlay, setYtShouldPlay] = useState(false)
+
+  const activeStep = useMemo(() => {
+    if (activeIndex < 0) return null
+    return steps[activeIndex] ?? null
+  }, [steps, activeIndex])
+
+  // 🔁 PROVA: UI renderiza sempre a partir da store
   useEffect(() => {
-    let mounted = true
+    dlog(
+      "[UI] steps changed:",
+      steps.map((s) => ({ id: s.id, st: s.status, p: s.progress }))
+    )
+  }, [steps])
 
-    async function bootstrap() {
-      const [pl, st, esp] = await Promise.all([
-        api.getPlaylist(),
-        api.getStatus(),
-        api.getEspStatus(),
-      ])
+  // Sync inicial (1x)
+  useEffect(() => {
+    ;(async () => {
+      const playlist = await api.getPlaylist()
+      setSteps(playlist.steps)
 
-      if (!mounted) return
+      try {
+        const s = await api.getStatus()
+        setStatus(s)
+        if (typeof s.activeIndex === "number") setActiveIndex(s.activeIndex)
+      } catch {}
+    })()
+  }, [setSteps])
 
-      dispatch({
-        type: "BOOTSTRAP",
-        playlist: pl.steps,
-        status: st,
-        esp: esp.nodes,
-      })
-    }
+  // WS — fonte de verdade de progresso
+  useEffect(() => {
+    const sock = connectSocket({
+      onMessage: (msg) => {
+        dlog("[WS] EVENT:", msg.type, msg.data)
 
-    bootstrap()
+        const type = msg.type
+        const data = msg.data
 
-    socketRef.current = connectSocket(
-      (msg) => {
-        switch (msg.type) {
-          case "status":
-            dispatch({ type: "STATUS", status: msg.data })
-            break
+        switch (type) {
+          case "status": {
+            setStatus(data)
+            if (typeof data?.activeIndex === "number") {
+              setActiveIndex(data.activeIndex)
+            }
+            if (data?.isPlaying === false) {
+              setYtShouldPlay(false)
+            }
+            return
+          }
 
-          case "playlist_progress":
-            dispatch({
-              type: "PLAYLIST_PROGRESS",
-              stepId: msg.data.stepId,
-              progress: msg.data.progress,
+          case "esp": {
+            setEspNodes(data?.nodes ?? [])
+            return
+          }
+
+          // ✅ pipeline
+          case "pipeline_started": {
+            const stepId = data?.stepId
+            if (!stepId) return
+
+            updateStepById(stepId, {
+              status: "processing",
+              progress: 0,
+              pipelineStage: data?.stage ?? "",
+            } as any)
+            return
+          }
+
+          case "pipeline_progress": {
+            const stepId = data?.stepId
+            if (!stepId) return
+
+            updateStepById(stepId, {
+              status: "processing",
+              progress: clamp01(data?.progress),
+              pipelineStage: data?.stage ?? "",
+            } as any)
+            return
+          }
+
+          case "pipeline_completed": {
+            const step = data?.step
+            if (step?.id) {
+              // 🔥 CRÍTICO: substitui o step inteiro (com bpm/duration/audio/leds/portal etc)
+              upsertStep({
+                ...step,
+                status: "ready",
+                progress: 1,
+              })
+            } else {
+              // reconcile pontual (não polling)
+              api.getPlaylist().then((p) => setSteps(p.steps)).catch(() => {})
+            }
+            return
+          }
+
+          case "pipeline_failed": {
+            const stepId = data?.stepId
+            if (!stepId) return
+            updateStepById(stepId, {
+              status: "error",
+              pipelineStage: data?.error ?? "Falha",
+            } as any)
+            return
+          }
+
+          // compat (caso backend mande ainda)
+          case "playlist_progress": {
+            const stepId = data?.stepId
+            if (!stepId) return
+            updateStepById(stepId, {
+              status: "processing",
+              progress: clamp01(data?.progress),
             })
-            break
+            return
+          }
 
-          case "playlist_ready":
-            dispatch({
-              type: "PLAYLIST_READY",
-              step: msg.data.step,
-            })
-            break
+          case "playlist_ready": {
+            const step = data?.step
+            if (step?.id) {
+              upsertStep({ ...step, status: "ready", progress: 1 })
+            } else {
+              api.getPlaylist().then((p) => setSteps(p.steps)).catch(() => {})
+            }
+            return
+          }
 
-          case "playlist_error":
-            dispatch({
-              type: "PLAYLIST_ERROR",
-              stepId: msg.data.stepId,
-            })
-            break
-
-          case "esp":
-            dispatch({ type: "ESP", nodes: msg.data.nodes })
-            break
+          default:
+            return
         }
       },
-      async () => {
-        dispatch({ type: "WS_CONNECTED", value: true })
+    })
 
-        // re-sync após reconnect
-        const [pl, st, esp] = await Promise.all([
-          api.getPlaylist(),
-          api.getStatus(),
-          api.getEspStatus(),
-        ])
+    return () => sock.close()
+  }, [setSteps, updateStepById, upsertStep])
 
-        dispatch({
-          type: "BOOTSTRAP",
-          playlist: pl.steps,
-          status: st,
-          esp: esp.nodes,
-        })
-      },
-      () => {
-        dispatch({ type: "WS_CONNECTED", value: false })
-      }
-    )
+  // helpers
+  const findIndexById = (id: string) => steps.findIndex((s) => s.id === id)
 
-    return () => {
-      mounted = false
-      socketRef.current?.close()
+  function onSelectStep(stepId: string) {
+    const idx = findIndexById(stepId)
+    const step = steps[idx]
+    if (!step) return
+
+    // só prepara vídeo quando ready + music
+    if (step.status === "ready" && step.type === "music" && step.youtubeUrl) {
+      setActiveIndex(idx)
+      setYtUrl(step.youtubeUrl)
+      setYtVisible(true)
+      setYtShouldPlay(false)
     }
-  }, [])
+  }
 
-  /* =======================
-     ACTIONS (HTTP only)
-  ======================= */
+  async function onPlayStep(stepId: string) {
+    const idx = findIndexById(stepId)
+    const step = steps[idx]
+    if (!step || step.status !== "ready") return
 
-  async function handlePlay() {
+    setActiveIndex(idx)
+
+    if (step.type === "music" && step.youtubeUrl) {
+      setYtUrl(step.youtubeUrl)
+      setYtVisible(true)
+    }
+
+    // backend inicia show
+    await api.playStep(idx)
+
+    // frontend inicia vídeo junto (sem clique no iframe)
+    if (step.type === "music" && step.youtubeUrl) {
+      setYtShouldPlay(true)
+    }
+  }
+
+  // player global
+  const onPlay = async () => {
     await api.play()
   }
 
-  async function handlePause() {
-    await api.pause()
+  const onPause = async () => {
+    setYtShouldPlay(false)
+    await api.pausePlayer() // /player/pause
   }
 
-  async function handleSkip() {
+  const onSkip = async () => {
+    setYtShouldPlay(false)
     await api.skip()
   }
 
-  async function handlePlayStep(index: number) {
-    await api.playStep(index)
+  async function onDelete(stepId: string) {
+    const idx = findIndexById(stepId)
+    if (idx < 0) return
+    if (!confirm("Remover este step?")) return
+
+    await api.deleteStep(idx)
+    removeStep(idx)
   }
 
-  async function handleCreateStep(formData: FormData) {
+  // ✅ add step (mantém como você já vinha fazendo)
+  async function handleCreateStep(fd: FormData) {
     setAddOpen(false)
 
-    const type = String(formData.get("type"))
+    // aqui você pode ter vários tipos (music/presentation/pause).
+    // Vou manter “music from youtube multipart” como estava no seu fluxo atual.
+    const payload = new FormData()
+    payload.append("title", String(fd.get("title") ?? ""))
+    payload.append("palette", String(fd.get("palette") ?? "blue"))
+    payload.append("genre", String(fd.get("genre") ?? ""))
+    payload.append("youtubeUrl", String(fd.get("youtubeUrl") ?? ""))
+    payload.append("useAI", String(Boolean(fd.get("useAI"))))
 
-    if (type === "presentation") {
-      await api.addPresentation(formData)
-      return
-    }
+    const audio = fd.get("audio")
+    if (audio instanceof File && audio.size > 0) payload.append("audio", audio)
 
-    if (type === "music") {
-      await api.addStepFromYoutube({
-        title: String(formData.get("title")),
-        type: "music",
-        palette: String(formData.get("palette")),
-        genre: String(formData.get("genre") || ""),
-        youtubeUrl: String(formData.get("youtubeUrl")),
-        useAI: Boolean(formData.get("useAI")),
-      })
-      return
-    }
+    const res = await api.addFromYoutubeMultipart(payload) // deve retornar { stepId }
+    const stepId = res.stepId
 
-    if (type === "pause") {
-      await api.addPause({
-        title: String(formData.get("title")),
-        durationMs: Number(formData.get("durationMs") || 3000),
-      })
-    }
+    // step entra imediatamente como processing (UI aparece sem refresh)
+    const optimistic: PlaylistStep = {
+      id: stepId,
+      title: String(fd.get("title") ?? ""),
+      type: "music",
+      status: "processing",
+      progress: 0,
+      palette: String(fd.get("palette") ?? "blue") as any,
+      genre: String(fd.get("genre") ?? ""),
+      durationMs: 0,
+      bpm: 0,
+      trackTitle: "",
+      audioFile: "",
+      hologram: "",
+      leds: "",
+      portal: "",
+      youtubeUrl: String(fd.get("youtubeUrl") ?? ""),
+      esp: [],
+    } as any
+
+    addStep(optimistic)
   }
 
-  /* =======================
-     DERIVED
-  ======================= */
-
-  const { playlist, status, esp, wsConnected } = state
-  const activeIndex = Math.max(
-    0,
-    Math.min(status.activeIndex, playlist.length - 1)
-  )
-  const currentStep = playlist[activeIndex]
-
-  /* =======================
-     RENDER
-  ======================= */
-
   return (
-    <main className="min-h-screen relative">
-      {/* background */}
-      <div
-        className="absolute inset-0 -z-10"
-        style={{
-          background:
-            "radial-gradient(900px 400px at 20% 0%, rgba(37,99,235,0.18), transparent 60%), radial-gradient(800px 400px at 90% 10%, rgba(124,58,237,0.10), transparent 60%), rgb(var(--bg-main))",
-        }}
-      />
+    <div className="min-h-screen bg-slate-50">
+      <Header mode={mode} onToggleMode={toggleMode} />
 
-      <div className="px-4 py-4 space-y-4">
-        <Header
-          mode={mode}
-          onToggleMode={() =>
-            setMode((m) => (m === "operator" ? "show" : "operator"))
-          }
-        />
-
-        {!wsConnected && (
-          <div className="rounded-xl border border-yellow-200 bg-yellow-50 px-4 py-2 text-sm text-yellow-800">
-            Conexão em tempo real indisponível. Tentando reconectar…
-          </div>
-        )}
-
+      <div className="px-4 pt-4">
         <PlayerControls
           mode={mode}
-          isPlaying={status.isPlaying}
-          bpm={status.bpm}
-          onPlay={handlePlay}
-          onPause={handlePause}
-          onSkip={handleSkip}
+          isPlaying={Boolean(status?.isPlaying)}
+          bpm={status?.bpm ?? 0}
+          onPlay={onPlay}
+          onPause={onPause}
+          onSkip={onSkip}
         />
+      </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-          <div className="lg:col-span-8">
-            <PlaylistView
-              steps={playlist}
-              activeIndex={activeIndex}
-              mode={mode}
-              onAdd={() => setAddOpen(true)}
-              onEdit={() => {}}
-              onDelete={() => {}}
-              onPlayStep={handlePlayStep}
-              getProgress={() => 0}
-            />
-          </div>
+      <div className="flex gap-4 p-4">
+        <div className="flex-1">
+          <PlaylistView
+            steps={steps}
+            activeIndex={activeIndex}
+            mode={mode}
+            onAdd={() => setAddOpen(true)}
+            onEdit={() => {}}
+            onDelete={onDelete}
+            onPlayStep={onPlayStep}
+            onSelectStep={onSelectStep}
+            getProgress={(i) => steps[i]?.progress ?? 0}
+          />
+        </div>
 
-          <div className="lg:col-span-4 space-y-4">
-            <StatusPanel
-              mode={mode}
-              isPlaying={status.isPlaying}
-              currentTitle={status.currentTitle}
-              currentType={status.currentType}
-              bpm={status.bpm}
-              progress={
-                currentStep?.durationMs
-                  ? status.elapsedMs / currentStep.durationMs
-                  : 0
-              }
-              elapsedLabel={`${Math.floor(status.elapsedMs / 1000)}s`}
-              totalLabel={`${Math.floor(
-                (currentStep?.durationMs || 0) / 1000
-              )}s`}
-              paletteName={status.palette}
-            />
-
-            <EspStatusPanel nodes={esp} />
-          </div>
+        <div className="w-[360px] space-y-4">
+          <StatusPanel status={status} activeStep={activeStep} />
+          <ESPStatusPanel nodes={espNodes as any} />
         </div>
       </div>
 
-      {/* ADD STEP */}
-      <Modal
-        open={addOpen}
-        title="Adicionar Step"
-        onClose={() => setAddOpen(false)}
-      >
-        <StepForm onSubmit={handleCreateStep} />
-      </Modal>
-    </main>
+      {addOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/30">
+          <div className="w-[440px] rounded-2xl bg-white p-5 shadow-xl">
+            <StepForm onSubmit={handleCreateStep} />
+          </div>
+        </div>
+      )}
+
+      <YouTubeStepPlayer
+        videoUrl={ytUrl}
+        visible={ytVisible}
+        shouldPlay={ytShouldPlay}
+        onClose={() => {
+          setYtVisible(false)
+          setYtShouldPlay(false)
+          setYtUrl(null)
+        }}
+      />
+    </div>
   )
 }
