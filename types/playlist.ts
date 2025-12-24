@@ -1,3 +1,5 @@
+// types/playlist.ts
+
 export type StepStatus = "processing" | "ready" | "error"
 
 export interface EspCommand {
@@ -21,17 +23,18 @@ export interface PlaylistStep {
   durationMs: number
   bpm: number
 
-  trackTitle: string
-  audioFile: string
+  // ⚠️ backend pode mandar null enquanto processa
+  trackTitle?: string | null
+  audioFile?: string | null
 
-  hologram: string
-  leds: string
-  portal: string
+  hologram?: string | null
+  leds?: string | null
+  portal?: string | null
 
-  youtubeUrl: string
+  youtubeUrl?: string | null
 
   esp: EspCommand[]
 
-  // ✅ novo (opcional): texto de estágio do pipeline vindo do WS
+  // opcional (WS)
   pipelineStage?: string
 }

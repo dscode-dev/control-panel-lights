@@ -22,6 +22,8 @@ export type WsClient = {
   close: () => void
   send: (msg: any) => boolean
   isOpen: () => boolean
+  // ✅ novo: expõe o ws pra hooks avançados (sem obrigar usar)
+  getRaw: () => WebSocket | null
 }
 
 export function connectSocket(opts: ConnectOpts): WsClient {
@@ -98,8 +100,9 @@ export function connectSocket(opts: ConnectOpts): WsClient {
         return true
       } catch {
         return false
-      }
+    }
     },
     isOpen: () => !!ws && ws.readyState === WebSocket.OPEN,
+    getRaw: () => ws,
   }
 }

@@ -2,24 +2,15 @@
 
 import { useEffect, useRef, useState } from "react"
 import { WebAudioAnalyzer } from "@/utils/audioEngine"
+import { WsClient } from "@/services/socket"
 
 type Props = {
   videoUrl: string | null
   visible: boolean
   shouldPlay: boolean
-  onReady?: (analyzer: WebAudioAnalyzer | null) => void
+  ws: WsClient | null
+  stepIndex: number
   onClose?: () => void
-}
-
-function extractVideoId(url: string): string | null {
-  try {
-    const u = new URL(url)
-    if (u.hostname.includes("youtu.be")) return u.pathname.replace("/", "") || null
-    if (u.searchParams.get("v")) return u.searchParams.get("v")
-    return null
-  } catch {
-    return null
-  }
 }
 
 declare global {
@@ -29,23 +20,38 @@ declare global {
   }
 }
 
+function extractVideoId(url: string): string | null {
+  try {
+    const u = new URL(url)
+    if (u.hostname.includes("youtu.be")) return u.pathname.slice(1)
+    return u.searchParams.get("v")
+  } catch {
+    return null
+  }
+}
+
 export default function YouTubeStepPlayer({
   videoUrl,
   visible,
   shouldPlay,
-  onReady,
+  ws,
+  stepIndex,
   onClose,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const playerRef = useRef<any>(null)
+
   const analyzerRef = useRef<WebAudioAnalyzer | null>(null)
+  const rafRef = useRef<number | null>(null)
 
   const [ready, setReady] = useState(false)
+
   const videoId = videoUrl ? extractVideoId(videoUrl) : null
 
-  // load iframe api
+  // =========================
+  // Load YouTube API
+  // =========================
   useEffect(() => {
-    if (typeof window === "undefined") return
     if (window.YT?.Player) return
 
     const tag = document.createElement("script")
@@ -53,7 +59,9 @@ export default function YouTubeStepPlayer({
     document.body.appendChild(tag)
   }, [])
 
-  // create player
+  // =========================
+  // Create Player
+  // =========================
   useEffect(() => {
     if (!visible || !videoId) return
     if (!containerRef.current) return
@@ -68,30 +76,11 @@ export default function YouTubeStepPlayer({
         playerVars: {
           autoplay: 0,
           controls: 1,
-          rel: 0,
-          modestbranding: 1,
           enablejsapi: 1,
         },
         events: {
-          onReady: async (event: any) => {
+          onReady: () => {
             setReady(true)
-
-            try {
-              const iframe = event.target.getIframe() as HTMLIFrameElement
-              const videoEl = iframe.querySelector("video") as HTMLVideoElement | null
-
-              if (videoEl) {
-                const analyzer = new WebAudioAnalyzer()
-                await analyzer.unlock()
-                analyzer.attachToAudioElement(videoEl)
-                analyzerRef.current = analyzer
-                onReady?.(analyzer)
-              } else {
-                onReady?.(null)
-              }
-            } catch {
-              onReady?.(null)
-            }
           },
         },
       })
@@ -101,43 +90,96 @@ export default function YouTubeStepPlayer({
     else window.onYouTubeIframeAPIReady = create
 
     return () => {
-      try {
-        analyzerRef.current?.close()
-      } catch {}
+      stopAudioLoop()
+      analyzerRef.current?.close()
       analyzerRef.current = null
 
       try {
-        playerRef.current?.destroy?.()
+        playerRef.current?.destroy()
       } catch {}
-
       playerRef.current = null
       setReady(false)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, videoId])
 
-  // play / pause
+  // =========================
+  // Play / Pause sync
+  // =========================
   useEffect(() => {
-    if (!ready || !playerRef.current || !visible) return
-    try {
-      if (shouldPlay) playerRef.current.playVideo()
-      else playerRef.current.pauseVideo()
-    } catch {}
-  }, [shouldPlay, ready, visible])
+    if (!ready || !playerRef.current) return
+
+    if (shouldPlay) {
+      playerRef.current.playVideo()
+      startAudioLoop()
+    } else {
+      playerRef.current.pauseVideo()
+      stopAudioLoop()
+    }
+  }, [shouldPlay, ready])
+
+  // =========================
+  // AUDIO LOOP
+  // =========================
+  function startAudioLoop() {
+    if (!ws || !ws.isOpen()) return
+    if (rafRef.current) return
+
+    if (!analyzerRef.current) {
+      analyzerRef.current = new WebAudioAnalyzer()
+    }
+
+    const analyzer = analyzerRef.current
+    const iframe = playerRef.current.getIframe() as HTMLIFrameElement
+    const audioEl = iframe.querySelector("audio") as HTMLAudioElement | null
+
+    if (!audioEl) {
+      console.warn("[AUDIO] <audio> não encontrado no iframe")
+      return
+    }
+
+    analyzer.attachToAudioElement(audioEl)
+    analyzer.resetBeat()
+
+    const loop = () => {
+      if (!ws.isOpen()) return
+
+      const elapsedMs = Math.floor(
+        playerRef.current.getCurrentTime() * 1000
+      )
+
+      const frame = analyzer.readFrame(performance.now())
+
+      ws.send({
+        type: "player_audio_frame",
+        data: {
+          stepIndex,
+          elapsedMs,
+          energy: frame.energy,
+          bands: frame.bands,
+          beat: frame.beat,
+        },
+      })
+
+      rafRef.current = requestAnimationFrame(loop)
+    }
+
+    rafRef.current = requestAnimationFrame(loop)
+  }
+
+  function stopAudioLoop() {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+  }
 
   if (!visible || !videoId) return null
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 rounded-2xl bg-white shadow-xl ring-1 ring-slate-200">
-      <div className="flex items-center justify-between px-3 py-2">
-        <div className="text-xs font-semibold text-slate-700">YouTube</div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-lg px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
-        >
-          Fechar
-        </button>
+    <div className="fixed bottom-4 right-4 z-50 rounded-xl bg-white shadow-xl">
+      <div className="flex justify-between px-3 py-2">
+        <span className="text-xs font-semibold">YouTube</span>
+        <button onClick={onClose}>✕</button>
       </div>
       <div className="p-2">
         <div ref={containerRef} />

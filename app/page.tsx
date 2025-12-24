@@ -1,158 +1,250 @@
-"use client"
+// app/page.tsx
+"use client";
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react";
 
-import Header from "@/components/Header"
-import PlayerControls from "@/components/PlayerControls"
-import StatusPanel from "@/components/StatusPanel"
-import ESPStatusPanel from "@/components/ESPStatusPanel"
-import PlaylistView from "@/components/PaylistView"
-import YouTubeStepPlayer from "@/components/YoutubeStepPlayer"
+import Header from "@/components/Header";
+import PlayerControls from "@/components/PlayerControls";
+import StatusPanel from "@/components/StatusPanel";
+import ESPStatusPanel from "@/components/ESPStatusPanel";
+import Modal from "@/components/Modal";
+import StepForm from "@/components/StepForm";
 
-import * as api from "@/services/api"
-import { connectSocket, type WsClient, type WsMessage } from "@/services/socket"
-import { usePlaylistStore } from "@/utils/playlistStore"
-import { WebAudioAnalyzer } from "@/utils/audioEngine"
+import * as api from "@/services/api";
+import { connectSocket } from "@/services/socket";
+import { usePlaylistStore } from "@/utils/playlistStore";
 
-import type { UiMode } from "@/utils/uiMode"
+import type { UiMode } from "@/utils/uiMode";
+import PlaylistView from "@/components/PaylistView";
+
+function getAudioEl(stepId: string | null) {
+  if (!stepId) return null;
+  return document.querySelector<HTMLAudioElement>(
+    `audio[data-step-id="${stepId}"]`
+  );
+}
+
+function playAudioNow(stepId: string | null) {
+  if (!stepId) return;
+
+  // ⚠️ garante que roda após o DOM renderizar o <audio>
+  requestAnimationFrame(() => {
+    const el = getAudioEl(stepId);
+    if (!el) return;
+
+    // se estiver "travado" com currentTime inválido, só ignora
+    el.play().catch(() => {});
+  });
+}
+
+function pauseAudioNow(stepId: string | null) {
+  const el = getAudioEl(stepId);
+  if (!el) return;
+  el.pause();
+}
 
 export default function Page() {
-  const steps = usePlaylistStore((s) => s.steps)
-  const setSteps = usePlaylistStore((s) => s.setSteps)
-  const updateStepById = usePlaylistStore((s) => s.updateStepById)
+  // store
+  const steps = usePlaylistStore((s) => s.steps);
+  const setSteps = usePlaylistStore((s) => s.setSteps);
+  const removeStep = usePlaylistStore((s) => s.removeStep);
 
-  const [mode, setMode] = useState<UiMode>("operator")
-  const [status, setStatus] = useState<any>(null)
-  const [activeIndex, setActiveIndex] = useState(-1)
+  // ui
+  const [mode, setMode] = useState<UiMode>("operator");
+  const toggleMode = () =>
+    setMode((p) => (p === "operator" ? "show" : "operator"));
 
-  const [ytVisible, setYtVisible] = useState(false)
-  const [ytUrl, setYtUrl] = useState<string | null>(null)
-  const [ytShouldPlay, setYtShouldPlay] = useState(false)
+  // backend status
+  const [status, setStatus] = useState<any>(null);
+  const [activeIndex, setActiveIndex] = useState(-1);
 
-  const wsRef = useRef<WsClient | null>(null)
-  const analyzerRef = useRef<WebAudioAnalyzer | null>(null)
-  const rafRef = useRef<number | null>(null)
+  // 🔊 áudio
+  const [audioStepId, setAudioStepId] = useState<string | null>(null);
+  const [audioShouldPlay, setAudioShouldPlay] = useState(false);
+
+  // ➕ modal add step
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [addLoading, setAddLoading] = useState(false);
 
   const activeStep = useMemo(() => {
-    if (activeIndex < 0) return null
-    return steps[activeIndex] ?? null
-  }, [steps, activeIndex])
+    if (activeIndex < 0) return null;
+    return steps[activeIndex] ?? null;
+  }, [steps, activeIndex]);
 
-  // initial sync
+  const findIndexById = (id: string) => steps.findIndex((s) => s.id === id);
+
+  // initial load
   useEffect(() => {
-    ;(async () => {
-      const playlist = await api.getPlaylist()
-      setSteps(playlist.steps)
-      const s = await api.getStatus()
-      setStatus(s)
-      setActiveIndex(s.activeIndex ?? -1)
-    })()
-  }, [setSteps])
+    (async () => {
+      const playlist = await api.getPlaylist();
+      setSteps(playlist.steps);
+
+      try {
+        const s = await api.getStatus();
+        setStatus(s);
+        if (typeof s.activeIndex === "number") {
+          setActiveIndex(s.activeIndex);
+        }
+      } catch {}
+    })();
+  }, [setSteps]);
 
   // websocket
   useEffect(() => {
     const sock = connectSocket({
-      onMessage: (msg: WsMessage) => {
+      onMessage: (msg: any) => {
+        if (msg.type === "playlist") {
+          setSteps(msg.data?.steps ?? []);
+          return;
+        }
+
         if (msg.type === "status") {
-          setStatus(msg.data)
-          if (typeof msg.data?.activeIndex === "number") {
-            setActiveIndex(msg.data.activeIndex)
+          const s = msg.data;
+          setStatus(s);
+
+          if (typeof s?.activeIndex === "number") {
+            setActiveIndex(s.activeIndex);
+
+            // ✅ se backend disser que está tocando, sincroniza o stepId e dá play
+            if (s?.isPlaying === true) {
+              const step = steps[s.activeIndex];
+              const stepId = step?.id ?? null;
+
+              // ⚠️ só troca se existir step
+              if (stepId) {
+                setAudioStepId(stepId);
+                setAudioShouldPlay(true);
+                playAudioNow(stepId);
+              }
+            }
+          }
+
+          // ✅ se backend parar, para o áudio local também
+          if (s?.isPlaying === false) {
+            setAudioShouldPlay(false);
+            pauseAudioNow(audioStepId);
           }
         }
-
-        if (msg.type === "playlist_progress") {
-          updateStepById(msg.data.stepId, {
-            progress: msg.data.progress,
-            pipelineStage: msg.data.stage,
-          } as any)
-        }
-
-        if (msg.type === "playlist") {
-          setSteps(msg.data.steps)
-        }
       },
-    })
+    });
 
-    wsRef.current = sock
-    return () => sock.close()
-  }, [setSteps, updateStepById])
+    return () => sock.close();
+    // ⚠️ steps entra aqui de propósito para status->activeIndex achar stepId
+  }, [setSteps, steps, audioStepId]);
 
-  // 🎯 CLOCK + AUDIO LOOP
-  useEffect(() => {
-    if (!ytShouldPlay) return
-    if (activeIndex < 0) return
-    if (!wsRef.current) return
-    if (!analyzerRef.current) return
-
-    const ws = wsRef.current
-    const analyzer = analyzerRef.current
-
-    const loop = () => {
-      const now = performance.now()
-
-      ws.send({
-        type: "player_tick",
-        data: {
-          stepIndex: activeIndex,
-          elapsedMs: Math.floor(now),
-        },
-      })
-
-      const frame = analyzer.readFrame(now)
-
-      ws.send({
-        type: "player_audio_frame",
-        data: {
-          energy: frame.energy,
-          bands: frame.bands,
-          beat: frame.beat,
-        },
-      })
-
-      rafRef.current = requestAnimationFrame(loop)
-    }
-
-    rafRef.current = requestAnimationFrame(loop)
-
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
-    }
-  }, [ytShouldPlay, activeIndex])
-
+  // ▶ play via step (único play do sistema)
   async function onPlayStep(stepId: string) {
-    const idx = steps.findIndex((s) => s.id === stepId)
-    if (idx < 0) return
+    const idx = findIndexById(stepId);
+    if (idx < 0) return;
 
-    setActiveIndex(idx)
+    setActiveIndex(idx);
 
-    const step = steps[idx]
-    if (step.type === "music" && step.youtubeUrl) {
-      setYtUrl(step.youtubeUrl)
-      setYtVisible(true)
-    }
+    // ✅ define o stepId e toca LOCAL imediatamente no clique
+    setAudioStepId(stepId);
+    setAudioShouldPlay(true);
+    playAudioNow(stepId);
 
-    await api.playStepByIndex(idx)
-    setYtShouldPlay(true)
+    // ✅ dispara backend (sincroniza leds / status)
+    await api.playStepByIndex(idx);
   }
 
-  async function onPauseButton() {
-    await api.pausePlayer()
-    setYtShouldPlay(false)
+  // ⏸ pause (backend + local)
+  async function onPause() {
+    // ✅ para o áudio REAL imediatamente
+    pauseAudioNow(audioStepId);
+    setAudioShouldPlay(false);
+
+    // ✅ e manda backend
+    await api.pausePlayer();
+  }
+
+  // ▶ resume (backend + local)
+  async function onResume() {
+    if (!audioStepId) return;
+
+    setAudioShouldPlay(true);
+    playAudioNow(audioStepId);
+
+    await api.resumePlayer();
+  }
+
+  // ⏭ skip
+  async function onSkip() {
+    // para o atual local
+    pauseAudioNow(audioStepId);
+    setAudioShouldPlay(false);
+
+    // backend vai avançar e emitir status/playlist via WS
+    await api.skip();
+  }
+
+  // 🗑 delete
+  async function onDelete(stepId: string) {
+    const idx = findIndexById(stepId);
+    if (idx < 0) return;
+
+    await api.deleteStep(idx);
+    removeStep(idx);
+
+    if (stepId === audioStepId) {
+      pauseAudioNow(audioStepId);
+      setAudioShouldPlay(false);
+      setAudioStepId(null);
+    }
+  }
+
+  // ➕ modal handlers
+  function openAddModal() {
+    setAddModalOpen(true);
+  }
+
+  function closeAddModal() {
+    if (addLoading) return;
+    setAddModalOpen(false);
+  }
+
+  // ✅ SUBMIT DO STEPFORM (FormData)
+  async function submitAddStep(formData: FormData) {
+    try {
+      setAddLoading(true);
+
+      const title = String(formData.get("title") ?? "").trim();
+      const youtubeUrl = String(formData.get("youtubeUrl") ?? "").trim();
+      const genre = String(formData.get("genre") ?? "");
+      const palette = String(formData.get("palette") ?? "blue");
+      const useAi =
+        formData.get("useAi") === "on" || formData.get("useAi") === "true";
+
+      if (!title || !youtubeUrl) {
+        throw new Error("Título e URL do YouTube são obrigatórios");
+      }
+
+      await api.addFromYouTube({
+        title,
+        youtubeUrl,
+        genre,
+        palette,
+        useAi,
+      });
+
+      setAddModalOpen(false);
+    } finally {
+      setAddLoading(false);
+    }
   }
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <Header mode={mode} onToggleMode={() => {}} />
+      <Header mode={mode} onToggleMode={toggleMode} />
 
-      <div className="p-4">
+      <div className="px-4 pt-4">
         <PlayerControls
           mode={mode}
           isPlaying={Boolean(status?.isPlaying)}
           bpm={status?.bpm ?? 0}
-          onPlay={() => {}}
-          onPause={onPauseButton}
-          onSkip={() => {}}
+          onPause={onPause}
+          onResume={onResume}
+          onSkip={onSkip}
         />
       </div>
 
@@ -162,11 +254,13 @@ export default function Page() {
             steps={steps}
             activeIndex={activeIndex}
             mode={mode}
-            onAdd={() => {}}
+            onAdd={openAddModal}
             onEdit={() => {}}
-            onDelete={() => {}}
+            onDelete={onDelete}
             onPlayStep={onPlayStep}
             getProgress={(i) => steps[i]?.progress ?? 0}
+            audioStepId={audioStepId}
+            audioShouldPlay={audioShouldPlay}
           />
         </div>
 
@@ -176,19 +270,10 @@ export default function Page() {
         </div>
       </div>
 
-      <YouTubeStepPlayer
-        videoUrl={ytUrl}
-        visible={ytVisible}
-        shouldPlay={ytShouldPlay}
-        onReady={(analyzer) => {
-          analyzerRef.current = analyzer
-        }}
-        onClose={() => {
-          setYtShouldPlay(false)
-          setYtVisible(false)
-          setYtUrl(null)
-        }}
-      />
+      {/* ✅ MODAL COM STEPFORM */}
+      <Modal open={addModalOpen} title="Adicionar Step" onClose={closeAddModal}>
+        <StepForm onSubmit={submitAddStep} />
+      </Modal>
     </div>
-  )
+  );
 }
