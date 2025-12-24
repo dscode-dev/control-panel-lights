@@ -1,12 +1,12 @@
 // services/api.ts
-const BASE =
+const API_BASE_URL =
   (process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000").replace(
     /\/$/,
     ""
   )
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
     headers: {
       ...(init?.headers || {}),
@@ -27,15 +27,31 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.text()) as unknown as T
 }
 
+// ---------------------------
+// Playlist
+// ---------------------------
 export async function getPlaylist(): Promise<{ steps: any[] }> {
   return request(`/playlist`)
 }
 
+export async function deleteStep(index: number): Promise<any> {
+  return request(`/playlist/delete/${index}`, { method: "DELETE" })
+}
+
+// ---------------------------
+// Status
+// ---------------------------
 export async function getStatus(): Promise<any> {
   return request(`/status`)
 }
 
-// ✅ player controls (NOVO)
+// ---------------------------
+// Player (NOVO CONTRATO)
+// ---------------------------
+export async function playStepByIndex(index: number): Promise<{ ok: boolean }> {
+  return request(`/player/play/${index}`, { method: "POST" })
+}
+
 export async function pausePlayer(): Promise<any> {
   return request(`/player/pause`, { method: "POST" })
 }
@@ -44,48 +60,13 @@ export async function resumePlayer(): Promise<any> {
   return request(`/player/resume`, { method: "POST" })
 }
 
-export async function stopPlayer(): Promise<any> {
-  return request(`/player/stop`, { method: "POST" })
-}
-
-export async function play(): Promise<any> {
-  return request(`/player/play`, { method: "POST" })
-}
-
 export async function skip(): Promise<any> {
   return request(`/skip`, { method: "POST" })
 }
 
-export async function playStep(index: number): Promise<any> {
-  // mantém o endpoint que você já tinha em uso
-  return request(`/player/play`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ index }),
-  })
+// ---------------------------
+// ESP
+// ---------------------------
+export async function refreshEsp(): Promise<any> {
+  return request(`/esp/refresh`, { method: "POST" })
 }
-
-export async function deleteStep(index: number): Promise<any> {
-  return request(`/playlist/delete/${index}`, { method: "DELETE" })
-}
-
-export async function refreshEsp() {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_API_BASE_URL}/esp/refresh`, {
-    method: "POST",
-  })
-
-  if (!res.ok) {
-    throw new Error("Failed to refresh ESP status")
-  }
-
-  return res.json()
-}
-
-export function playStepByIndex(index: number) {
-  return request<{ ok: boolean }>(`/player/play/${index}`, {
-    method: "POST",
-  })
-}
-
-// Se você já usa multipart para add, mantenha seus exports existentes.
-// (Não alterei aqui porque seu fluxo atual pode estar diferente.)
