@@ -1,11 +1,3 @@
-import { API_BASE } from "./api"
-
-type Handlers = {
-  onOpen?: () => void
-  onClose?: () => void
-  onMessage: (msg: any) => void
-}
-
 // services/socket.ts
 export type WsMessage = { type: string; data?: any }
 
@@ -26,7 +18,13 @@ function toWsUrl(httpBase: string) {
   return httpBase.replace(/^http/i, "ws").replace(/\/$/, "") + "/ws"
 }
 
-export function connectSocket(opts: ConnectOpts) {
+export type WsClient = {
+  close: () => void
+  send: (msg: any) => boolean
+  isOpen: () => boolean
+}
+
+export function connectSocket(opts: ConnectOpts): WsClient {
   const base =
     process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ||
     "http://localhost:8000"
@@ -53,7 +51,6 @@ export function connectSocket(opts: ConnectOpts) {
 
       if (closedByUser) return
 
-      // backoff simples (até 5s)
       retry += 1
       const delay = Math.min(5000, 300 * retry)
       retryTimer = setTimeout(open, delay)
@@ -94,12 +91,15 @@ export function connectSocket(opts: ConnectOpts) {
       if (retryTimer) clearTimeout(retryTimer)
       ws?.close()
     },
-  }
-}
-
-function confirmInBrowser() {
-  // Next.js safety: this ensures WebSocket only runs client-side
-  if (typeof window === "undefined") {
-    throw new Error("connectSocket must run in the browser")
+    send: (msg: any) => {
+      try {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return false
+        ws.send(JSON.stringify(msg))
+        return true
+      } catch {
+        return false
+      }
+    },
+    isOpen: () => !!ws && ws.readyState === WebSocket.OPEN,
   }
 }

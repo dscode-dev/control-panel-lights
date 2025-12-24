@@ -1,301 +1,422 @@
 // app/page.tsx
-"use client"
+"use client";
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import Header from "@/components/Header"
-import PlayerControls from "@/components/PlayerControls"
-import StatusPanel from "@/components/StatusPanel"
-import ESPStatusPanel from "@/components/ESPStatusPanel"
-import StepForm from "@/components/StepForm"
+import Header from "@/components/Header";
+import PlayerControls from "@/components/PlayerControls";
+import StatusPanel from "@/components/StatusPanel";
+import ESPStatusPanel from "@/components/ESPStatusPanel";
 
-import * as api from "@/services/api"
-import { connectSocket } from "@/services/socket"
+import * as api from "@/services/api";
+import { connectSocket, type WsClient } from "@/services/socket";
+import { usePlaylistStore } from "@/utils/playlistStore";
+import { WebAudioAnalyzer } from "@/utils/audioEngine";
 
-import { usePlaylistStore } from "@/utils/playlistStore"
-import type { PlaylistStep } from "@/types/playlist"
-import type { UiMode } from "@/utils/uiMode"
-import PlaylistView from "@/components/PaylistView"
-import YouTubeStepPlayer from "@/components/YoutubeStepPlayer"
+import type { PlaylistStep } from "@/types/playlist";
+import type { UiMode } from "@/utils/uiMode";
+import PlaylistView from "@/components/PaylistView";
+import YouTubeStepPlayer from "@/components/YoutubeStepPlayer";
 
-const DEBUG = process.env.NEXT_PUBLIC_DEBUG_WS === "1"
+const DEBUG = process.env.NEXT_PUBLIC_DEBUG_WS === "1";
+const dlog = (...a: any[]) => DEBUG && console.log(...a);
 
-function dlog(...args: any[]) {
-  if (DEBUG) console.log(...args)
-}
-
-type EspNode = any // não mexo nisso aqui pra não quebrar seu componente
+type EspNode = any;
 
 function clamp01(x: any) {
-  const n = Number(x)
-  if (!Number.isFinite(n)) return 0
-  return Math.max(0, Math.min(1, n))
+  const n = Number(x);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(1, n));
 }
 
 export default function Page() {
-  // ✅ STORE (fonte da UI)
-  const steps = usePlaylistStore((s) => s.steps)
-  const setSteps = usePlaylistStore((s) => s.setSteps)
-  const addStep = usePlaylistStore((s) => s.addStep)
-  const upsertStep = usePlaylistStore((s) => s.upsertStep)
-  const updateStepById = usePlaylistStore((s) => s.updateStepById)
-  const removeStep = usePlaylistStore((s) => s.removeStep)
+  // store
+  const steps = usePlaylistStore((s) => s.steps);
+  const setSteps = usePlaylistStore((s) => s.setSteps);
+  const addStep = usePlaylistStore((s) => s.addStep);
+  const upsertStep = usePlaylistStore((s) => s.upsertStep);
+  const updateStepById = usePlaylistStore((s) => s.updateStepById);
+  const removeStep = usePlaylistStore((s) => s.removeStep);
 
-  // UI
-  const [mode, setMode] = useState<UiMode>("operator")
+  // ui
+  const [mode, setMode] = useState<UiMode>("operator");
   const toggleMode = () =>
-    setMode((prev) => (prev === "operator" ? "show" : "operator"))
+    setMode((p) => (p === "operator" ? "show" : "operator"));
 
-  const [addOpen, setAddOpen] = useState(false)
+  // backend status
+  const [status, setStatus] = useState<any>(null);
+  const [activeIndex, setActiveIndex] = useState(-1);
 
-  // Player/Status
-  const [status, setStatus] = useState<any>(null)
-  const [activeIndex, setActiveIndex] = useState(-1)
+  // esp
+  const [espNodes, setEspNodes] = useState<EspNode[]>([]);
 
-  // ESP
-  const [espNodes, setEspNodes] = useState<EspNode[]>([])
+  // youtube
+  const [ytVisible, setYtVisible] = useState(false);
+  const [ytUrl, setYtUrl] = useState<string | null>(null);
+  const [ytShouldPlay, setYtShouldPlay] = useState(false);
 
-  // YouTube
-  const [ytVisible, setYtVisible] = useState(false)
-  const [ytUrl, setYtUrl] = useState<string | null>(null)
-  const [ytShouldPlay, setYtShouldPlay] = useState(false)
+  // audio engine (local)
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+  const analyzerRef = useRef<WebAudioAnalyzer | null>(null);
+  const wsRef = useRef<WsClient | null>(null);
+  const frameTimerRef = useRef<number | null>(null);
+  const [audioReady, setAudioReady] = useState(false);
 
   const activeStep = useMemo(() => {
-    if (activeIndex < 0) return null
-    return steps[activeIndex] ?? null
-  }, [steps, activeIndex])
+    if (activeIndex < 0) return null;
+    return steps[activeIndex] ?? null;
+  }, [steps, activeIndex]);
 
-  // 🔁 PROVA: UI renderiza sempre a partir da store
   useEffect(() => {
     dlog(
       "[UI] steps changed:",
       steps.map((s) => ({ id: s.id, st: s.status, p: s.progress }))
-    )
-  }, [steps])
+    );
+  }, [steps]);
 
-  // Sync inicial (1x)
+  // initial sync
   useEffect(() => {
-    ;(async () => {
-      const playlist = await api.getPlaylist()
-      setSteps(playlist.steps)
+    (async () => {
+      const playlist = await api.getPlaylist();
+      setSteps(playlist.steps);
 
       try {
-        const s = await api.getStatus()
-        setStatus(s)
-        if (typeof s.activeIndex === "number") setActiveIndex(s.activeIndex)
+        const s = await api.getStatus();
+        setStatus(s);
+        if (typeof s.activeIndex === "number") setActiveIndex(s.activeIndex);
       } catch {}
-    })()
-  }, [setSteps])
+    })();
+  }, [setSteps]);
 
-  // WS — fonte de verdade de progresso
+  // websocket connect (recebe progresso do pipeline + status)
   useEffect(() => {
     const sock = connectSocket({
       onMessage: (msg) => {
-        dlog("[WS] EVENT:", msg.type, msg.data)
+        dlog("[WS] EVENT:", msg.type, msg.data);
 
-        const type = msg.type
-        const data = msg.data
+        const type = msg.type;
+        const data = msg.data;
 
         switch (type) {
           case "status": {
-            setStatus(data)
-            if (typeof data?.activeIndex === "number") {
-              setActiveIndex(data.activeIndex)
-            }
+            setStatus(data);
+            if (typeof data?.activeIndex === "number")
+              setActiveIndex(data.activeIndex);
             if (data?.isPlaying === false) {
-              setYtShouldPlay(false)
+              // backend parou → pausa yt e frames
+              setYtShouldPlay(false);
+              stopFrames();
+              pauseLocalAudio();
             }
-            return
+            return;
           }
 
           case "esp": {
-            setEspNodes(data?.nodes ?? [])
-            return
+            setEspNodes(data?.nodes ?? []);
+            return;
           }
 
-          // ✅ pipeline
+          // pipeline events
           case "pipeline_started": {
-            const stepId = data?.stepId
-            if (!stepId) return
-
+            const stepId = data?.stepId;
+            if (!stepId) return;
             updateStepById(stepId, {
               status: "processing",
               progress: 0,
               pipelineStage: data?.stage ?? "",
-            } as any)
-            return
+            } as any);
+            return;
           }
 
           case "pipeline_progress": {
-            const stepId = data?.stepId
-            if (!stepId) return
-
+            const stepId = data?.stepId;
+            if (!stepId) return;
             updateStepById(stepId, {
               status: "processing",
               progress: clamp01(data?.progress),
               pipelineStage: data?.stage ?? "",
-            } as any)
-            return
+            } as any);
+            return;
           }
 
           case "pipeline_completed": {
-            const step = data?.step
+            const step = data?.step;
             if (step?.id) {
-              // 🔥 CRÍTICO: substitui o step inteiro (com bpm/duration/audio/leds/portal etc)
-              upsertStep({
-                ...step,
-                status: "ready",
-                progress: 1,
-              })
+              upsertStep({ ...step, status: "ready", progress: 1 });
             } else {
-              // reconcile pontual (não polling)
-              api.getPlaylist().then((p) => setSteps(p.steps)).catch(() => {})
+              api
+                .getPlaylist()
+                .then((p) => setSteps(p.steps))
+                .catch(() => {});
             }
-            return
+            return;
           }
 
           case "pipeline_failed": {
-            const stepId = data?.stepId
-            if (!stepId) return
+            const stepId = data?.stepId;
+            if (!stepId) return;
             updateStepById(stepId, {
               status: "error",
               pipelineStage: data?.error ?? "Falha",
-            } as any)
-            return
+            } as any);
+            return;
           }
 
-          // compat (caso backend mande ainda)
+          // compat antigos
           case "playlist_progress": {
-            const stepId = data?.stepId
-            if (!stepId) return
+            const stepId = data?.stepId;
+            if (!stepId) return;
             updateStepById(stepId, {
               status: "processing",
               progress: clamp01(data?.progress),
-            })
-            return
+            });
+            return;
           }
 
           case "playlist_ready": {
-            const step = data?.step
-            if (step?.id) {
-              upsertStep({ ...step, status: "ready", progress: 1 })
-            } else {
-              api.getPlaylist().then((p) => setSteps(p.steps)).catch(() => {})
-            }
-            return
+            const step = data?.step;
+            if (step?.id) upsertStep({ ...step, status: "ready", progress: 1 });
+            return;
           }
 
           default:
-            return
+            return;
         }
       },
-    })
+      onOpen: () => dlog("[WS] open"),
+      onClose: () => dlog("[WS] close"),
+    });
 
-    return () => sock.close()
-  }, [setSteps, updateStepById, upsertStep])
+    wsRef.current = sock;
+    return () => sock.close();
+  }, [setSteps, updateStepById, upsertStep]);
 
-  // helpers
-  const findIndexById = (id: string) => steps.findIndex((s) => s.id === id)
+  // create hidden audio element once
+  useEffect(() => {
+    const el = document.createElement("audio");
+    el.preload = "auto";
+    el.crossOrigin = "anonymous";
+    el.muted = true; // ✅ não toca no usuário (YouTube é o áudio “real”)
+    el.volume = 0;
+    el.style.display = "none";
+    document.body.appendChild(el);
+    audioElRef.current = el;
+
+    const analyzer = new WebAudioAnalyzer();
+    analyzerRef.current = analyzer;
+
+    const onCanPlay = () => setAudioReady(true);
+    el.addEventListener("canplay", onCanPlay);
+
+    return () => {
+      el.removeEventListener("canplay", onCanPlay);
+      try {
+        el.pause();
+      } catch {}
+      el.remove();
+      analyzer.close();
+      analyzerRef.current = null;
+      audioElRef.current = null;
+    };
+  }, []);
+
+  const findIndexById = (id: string) => steps.findIndex((s) => s.id === id);
 
   function onSelectStep(stepId: string) {
-    const idx = findIndexById(stepId)
-    const step = steps[idx]
-    if (!step) return
+    const idx = findIndexById(stepId);
+    const step = steps[idx];
+    if (!step) return;
 
-    // só prepara vídeo quando ready + music
+    setActiveIndex(idx);
+
     if (step.status === "ready" && step.type === "music" && step.youtubeUrl) {
-      setActiveIndex(idx)
-      setYtUrl(step.youtubeUrl)
-      setYtVisible(true)
-      setYtShouldPlay(false)
+      setYtUrl(step.youtubeUrl);
+      setYtVisible(true);
+      setYtShouldPlay(false); // prepara, mas não toca
     }
   }
 
+  function buildAudioUrl(step: PlaylistStep): string | null {
+    // step.audioFile vindo do backend após pipeline
+    // pode ser URL absoluta ou path. Se for path, prefixa com API_BASE_URL.
+    const file = (step as any).audioFile as string | undefined;
+    if (!file) return null;
+    if (file.startsWith("http://") || file.startsWith("https://")) return file;
+    const base = (
+      process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000"
+    ).replace(/\/$/, "");
+    return `${base}${file.startsWith("/") ? "" : "/"}${file}`;
+  }
+
+  async function startLocalAudio(step: PlaylistStep) {
+    const el = audioElRef.current;
+    const analyzer = analyzerRef.current;
+    if (!el || !analyzer) return;
+
+    const audioUrl = buildAudioUrl(step);
+    if (!audioUrl) return; // sem arquivo ainda
+
+    // user gesture unlock (precisa ser no clique do play)
+    await analyzer.unlock();
+
+    // attach analyser (uma vez)
+    try {
+      analyzer.attachToAudioElement(el);
+    } catch {}
+
+    // troca source
+    if (el.src !== audioUrl) {
+      setAudioReady(false);
+      el.src = audioUrl;
+      el.load();
+    }
+
+    // play (mutado)
+    try {
+      await el.play();
+    } catch {
+      // autoplay restriction: como isso ocorre dentro do click do step, geralmente destrava.
+    }
+  }
+
+  function pauseLocalAudio() {
+    const el = audioElRef.current;
+    if (!el) return;
+    try {
+      el.pause();
+    } catch {}
+  }
+
+  function stopLocalAudio() {
+    const el = audioElRef.current;
+    if (!el) return;
+    try {
+      el.pause();
+      el.currentTime = 0;
+    } catch {}
+  }
+
+  function startFrames(stepId: string) {
+    stopFrames();
+
+    // 30Hz
+    const intervalMs = 33;
+    frameTimerRef.current = window.setInterval(() => {
+      const analyzer = analyzerRef.current;
+      const ws = wsRef.current;
+      if (!analyzer || !ws) return;
+
+      const frame = analyzer.readFrame(Date.now() / 1000);
+
+      const msg = {
+        type: "music_frame",
+        data: {
+          ts: frame.ts,
+          stepId,
+          energy: frame.energy,
+          bands: frame.bands,
+          beat: frame.beat,
+        },
+      };
+
+      ws.send(msg);
+    }, intervalMs);
+  }
+
+  function stopFrames() {
+    if (frameTimerRef.current) {
+      clearInterval(frameTimerRef.current);
+      frameTimerRef.current = null;
+    }
+  }
+
+  // ▶ PLAY step (ready): inicia YT + audio local + frames e chama backend
   async function onPlayStep(stepId: string) {
-    const idx = findIndexById(stepId)
-    const step = steps[idx]
-    if (!step || step.status !== "ready") return
+    const idx = findIndexById(stepId);
+    const step = steps[idx];
+    if (!step || step.status !== "ready") return;
 
-    setActiveIndex(idx)
+    setActiveIndex(idx);
 
+    // prepara box do youtube (NÃO toca ainda)
     if (step.type === "music" && step.youtubeUrl) {
-      setYtUrl(step.youtubeUrl)
-      setYtVisible(true)
+      setYtUrl(step.youtubeUrl);
+      setYtVisible(true);
     }
 
-    // backend inicia show
-    await api.playStep(idx)
+    /**
+     * ⚠️ USER GESTURE CRÍTICO
+     * Nada de await antes de iniciar TODA a mídia
+     */
 
-    // frontend inicia vídeo junto (sem clique no iframe)
+    // 1️⃣ destrava AudioContext + prepara analyser (SEM await)
+    startLocalAudio(step);
+
+    // 2️⃣ inicia YouTube imediatamente (gesto válido)
     if (step.type === "music" && step.youtubeUrl) {
-      setYtShouldPlay(true)
+      setYtShouldPlay(true);
     }
+
+    // 3️⃣ agora sim: manda backend iniciar o executor
+    try {
+      await api.playStepByIndex(idx);
+    } catch (e) {
+      // se backend falhar, interrompe tudo
+      stopLocalAudio();
+      stopFrames();
+      setYtShouldPlay(false);
+      return;
+    }
+
+    // 4️⃣ backend confirmado → inicia envio de frames (~30Hz)
+    startFrames(step.id);
   }
 
-  // player global
-  const onPlay = async () => {
-    await api.play()
+  // ⏸ Pause: pausa vídeo + pausa áudio local + para frames + chama backend
+  async function onPause() {
+    setYtShouldPlay(false);
+    pauseLocalAudio();
+    stopFrames();
+    await api.pausePlayer();
   }
 
-  const onPause = async () => {
-    setYtShouldPlay(false)
-    await api.pausePlayer() // /player/pause
+  // ▶ Resume: retoma vídeo + retoma áudio local + retoma frames + chama backend
+  async function onResume() {
+    const step = activeStep;
+    if (!step) return;
+
+    // retoma audio local
+    await startLocalAudio(step);
+    startFrames(step.id);
+
+    // retoma yt
+    if (step.type === "music" && step.youtubeUrl) setYtShouldPlay(true);
+
+    await api.resumePlayer();
   }
 
-  const onSkip = async () => {
-    setYtShouldPlay(false)
-    await api.skip()
+  // ⏹ Stop: para tudo + chama backend
+  async function onStop() {
+    setYtShouldPlay(false);
+    setYtVisible(false);
+    stopLocalAudio();
+    stopFrames();
+    await api.stopPlayer();
+  }
+
+  async function onSkip() {
+    setYtShouldPlay(false);
+    stopFrames();
+    stopLocalAudio();
+    await api.skip();
   }
 
   async function onDelete(stepId: string) {
-    const idx = findIndexById(stepId)
-    if (idx < 0) return
-    if (!confirm("Remover este step?")) return
-
-    await api.deleteStep(idx)
-    removeStep(idx)
-  }
-
-  // ✅ add step (mantém como você já vinha fazendo)
-  async function handleCreateStep(fd: FormData) {
-    setAddOpen(false)
-
-    // aqui você pode ter vários tipos (music/presentation/pause).
-    // Vou manter “music from youtube multipart” como estava no seu fluxo atual.
-    const payload = new FormData()
-    payload.append("title", String(fd.get("title") ?? ""))
-    payload.append("palette", String(fd.get("palette") ?? "blue"))
-    payload.append("genre", String(fd.get("genre") ?? ""))
-    payload.append("youtubeUrl", String(fd.get("youtubeUrl") ?? ""))
-    payload.append("useAI", String(Boolean(fd.get("useAI"))))
-
-    const audio = fd.get("audio")
-    if (audio instanceof File && audio.size > 0) payload.append("audio", audio)
-
-    const res = await api.addFromYoutubeMultipart(payload) // deve retornar { stepId }
-    const stepId = res.stepId
-
-    // step entra imediatamente como processing (UI aparece sem refresh)
-    const optimistic: PlaylistStep = {
-      id: stepId,
-      title: String(fd.get("title") ?? ""),
-      type: "music",
-      status: "processing",
-      progress: 0,
-      palette: String(fd.get("palette") ?? "blue") as any,
-      genre: String(fd.get("genre") ?? ""),
-      durationMs: 0,
-      bpm: 0,
-      trackTitle: "",
-      audioFile: "",
-      hologram: "",
-      leds: "",
-      portal: "",
-      youtubeUrl: String(fd.get("youtubeUrl") ?? ""),
-      esp: [],
-    } as any
-
-    addStep(optimistic)
+    const idx = findIndexById(stepId);
+    if (idx < 0) return;
+    if (!confirm("Remover este step?")) return;
+    await api.deleteStep(idx);
+    removeStep(idx);
   }
 
   return (
@@ -307,9 +428,12 @@ export default function Page() {
           mode={mode}
           isPlaying={Boolean(status?.isPlaying)}
           bpm={status?.bpm ?? 0}
-          onPlay={onPlay}
+          onPlay={() => api.play()}
           onPause={onPause}
           onSkip={onSkip}
+          // se seu PlayerControls tiver resume/stop, use:
+          // onResume={onResume}
+          // onStop={onStop}
         />
       </div>
 
@@ -319,7 +443,7 @@ export default function Page() {
             steps={steps}
             activeIndex={activeIndex}
             mode={mode}
-            onAdd={() => setAddOpen(true)}
+            onAdd={() => {}}
             onEdit={() => {}}
             onDelete={onDelete}
             onPlayStep={onPlayStep}
@@ -334,24 +458,16 @@ export default function Page() {
         </div>
       </div>
 
-      {addOpen && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/30">
-          <div className="w-[440px] rounded-2xl bg-white p-5 shadow-xl">
-            <StepForm onSubmit={handleCreateStep} />
-          </div>
-        </div>
-      )}
-
       <YouTubeStepPlayer
         videoUrl={ytUrl}
         visible={ytVisible}
         shouldPlay={ytShouldPlay}
         onClose={() => {
-          setYtVisible(false)
-          setYtShouldPlay(false)
-          setYtUrl(null)
+          setYtShouldPlay(false);
+          setYtVisible(false);
+          setYtUrl(null);
         }}
       />
     </div>
-  )
+  );
 }
