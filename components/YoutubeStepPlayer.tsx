@@ -1,13 +1,13 @@
-// components/YouTubeStepPlayer.tsx
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import { WebAudioAnalyzer } from "@/utils/audioEngine"
 
 type Props = {
   videoUrl: string | null
   visible: boolean
   shouldPlay: boolean
-  onReady?: () => void
+  onReady?: (analyzer: WebAudioAnalyzer | null) => void
   onClose?: () => void
 }
 
@@ -38,11 +38,12 @@ export default function YouTubeStepPlayer({
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const playerRef = useRef<any>(null)
-  const [ready, setReady] = useState(false)
+  const analyzerRef = useRef<WebAudioAnalyzer | null>(null)
 
+  const [ready, setReady] = useState(false)
   const videoId = videoUrl ? extractVideoId(videoUrl) : null
 
-  // load Iframe API
+  // load iframe api
   useEffect(() => {
     if (typeof window === "undefined") return
     if (window.YT?.Player) return
@@ -52,7 +53,7 @@ export default function YouTubeStepPlayer({
     document.body.appendChild(tag)
   }, [])
 
-  // create player when visible + has videoId
+  // create player
   useEffect(() => {
     if (!visible || !videoId) return
     if (!containerRef.current) return
@@ -72,9 +73,25 @@ export default function YouTubeStepPlayer({
           enablejsapi: 1,
         },
         events: {
-          onReady: () => {
+          onReady: async (event: any) => {
             setReady(true)
-            onReady?.()
+
+            try {
+              const iframe = event.target.getIframe() as HTMLIFrameElement
+              const videoEl = iframe.querySelector("video") as HTMLVideoElement | null
+
+              if (videoEl) {
+                const analyzer = new WebAudioAnalyzer()
+                await analyzer.unlock()
+                analyzer.attachToAudioElement(videoEl)
+                analyzerRef.current = analyzer
+                onReady?.(analyzer)
+              } else {
+                onReady?.(null)
+              }
+            } catch {
+              onReady?.(null)
+            }
           },
         },
       })
@@ -85,19 +102,23 @@ export default function YouTubeStepPlayer({
 
     return () => {
       try {
+        analyzerRef.current?.close()
+      } catch {}
+      analyzerRef.current = null
+
+      try {
         playerRef.current?.destroy?.()
       } catch {}
+
       playerRef.current = null
       setReady(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible, videoId])
 
-  // when shouldPlay toggles
+  // play / pause
   useEffect(() => {
-    if (!ready || !playerRef.current) return
-    if (!visible) return
-
+    if (!ready || !playerRef.current || !visible) return
     try {
       if (shouldPlay) playerRef.current.playVideo()
       else playerRef.current.pauseVideo()
