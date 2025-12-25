@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import Header from "@/components/Header";
 import PlayerControls from "@/components/PlayerControls";
@@ -10,7 +10,7 @@ import Modal from "@/components/Modal";
 import StepForm from "@/components/StepForm";
 
 import * as api from "@/services/api";
-import { connectSocket, type WsClient } from "@/services/socket";
+import { connectSocket } from "@/services/socket";
 import { usePlaylistStore } from "@/utils/playlistStore";
 
 import type { UiMode } from "@/utils/uiMode";
@@ -23,6 +23,16 @@ function getAudioEl(stepId: string | null) {
   );
 }
 
+function playAudioNow(stepId: string | null) {
+  if (!stepId) return;
+
+  requestAnimationFrame(() => {
+    const el = getAudioEl(stepId);
+    if (!el) return;
+    el.play().catch(() => {});
+  });
+}
+
 function pauseAudioNow(stepId: string | null) {
   const el = getAudioEl(stepId);
   if (!el) return;
@@ -30,37 +40,36 @@ function pauseAudioNow(stepId: string | null) {
 }
 
 export default function Page() {
+  // store
   const steps = usePlaylistStore((s) => s.steps);
   const setSteps = usePlaylistStore((s) => s.setSteps);
   const removeStep = usePlaylistStore((s) => s.removeStep);
 
+  // ui
   const [mode, setMode] = useState<UiMode>("operator");
   const toggleMode = () =>
     setMode((p) => (p === "operator" ? "show" : "operator"));
 
+  // backend status
   const [status, setStatus] = useState<any>(null);
   const [activeIndex, setActiveIndex] = useState(-1);
 
+  // 🔊 áudio
   const [audioStepId, setAudioStepId] = useState<string | null>(null);
   const [audioShouldPlay, setAudioShouldPlay] = useState(false);
 
+  // ➕ modal add step
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [addLoading, setAddLoading] = useState(false);
-
-  const [wsClient, setWsClient] = useState<WsClient | null>(null);
-
-  // 🔐 só permite play real após gesto do usuário
-  const userGestureRef = useRef(false);
 
   const activeStep = useMemo(() => {
     if (activeIndex < 0) return null;
     return steps[activeIndex] ?? null;
   }, [steps, activeIndex]);
 
-  const findIndexById = (id: string) =>
-    steps.findIndex((s) => s.id === id);
+  const findIndexById = (id: string) => steps.findIndex((s) => s.id === id);
 
-  // INITIAL LOAD
+  // initial load
   useEffect(() => {
     (async () => {
       const playlist = await api.getPlaylist();
@@ -76,11 +85,9 @@ export default function Page() {
     })();
   }, [setSteps]);
 
-  // WEBSOCKET
+  // websocket (somente status/playlist)
   useEffect(() => {
     const sock = connectSocket({
-      onOpen: () => setWsClient(sock),
-      onClose: () => setWsClient(null),
       onMessage: (msg: any) => {
         if (msg.type === "playlist") {
           setSteps(msg.data?.steps ?? []);
@@ -97,7 +104,7 @@ export default function Page() {
             const step = steps[s.activeIndex];
             const stepId = step?.id ?? null;
 
-            if (stepId && stepId !== audioStepId) {
+            if (stepId) {
               setAudioStepId(stepId);
             }
           }
@@ -105,56 +112,45 @@ export default function Page() {
           if (s?.isPlaying === false) {
             setAudioShouldPlay(false);
             pauseAudioNow(audioStepId);
-            userGestureRef.current = false;
           }
         }
       },
     });
 
-    return () => {
-      sock.close();
-      setWsClient(null);
-    };
+    return () => sock.close();
   }, [setSteps, steps, audioStepId]);
 
-  // ▶ PLAY
+  // ▶ play
   async function onPlayStep(stepId: string) {
     const idx = findIndexById(stepId);
     if (idx < 0) return;
 
-    userGestureRef.current = true;
-
     setActiveIndex(idx);
+
     setAudioStepId(stepId);
     setAudioShouldPlay(true);
+    playAudioNow(stepId);
 
     await api.playStepByIndex(idx);
   }
 
-  // ⏸ PAUSE
+  // ⏸ pause
   async function onPause() {
-    userGestureRef.current = false;
-
     pauseAudioNow(audioStepId);
     setAudioShouldPlay(false);
-
     await api.pausePlayer();
   }
 
-  // ▶ RESUME
+  // ▶ resume
   async function onResume() {
     if (!audioStepId) return;
-
-    userGestureRef.current = true;
     setAudioShouldPlay(true);
-
+    playAudioNow(audioStepId);
     await api.resumePlayer();
   }
 
-  // ⏭ SKIP
+  // ⏭ skip
   async function onSkip() {
-    userGestureRef.current = true;
-
     pauseAudioNow(audioStepId);
     setAudioShouldPlay(false);
 
@@ -171,12 +167,13 @@ export default function Page() {
       setActiveIndex(nextIndex);
       setAudioStepId(nextId);
       setAudioShouldPlay(true);
+      playAudioNow(nextId);
     }
 
     await api.skip();
   }
 
-  // 🗑 DELETE
+  // 🗑 delete
   async function onDelete(stepId: string) {
     const idx = findIndexById(stepId);
     if (idx < 0) return;
@@ -188,10 +185,10 @@ export default function Page() {
       pauseAudioNow(audioStepId);
       setAudioShouldPlay(false);
       setAudioStepId(null);
-      userGestureRef.current = false;
     }
   }
 
+  // ➕ modal handlers
   function openAddModal() {
     setAddModalOpen(true);
   }
@@ -258,7 +255,6 @@ export default function Page() {
             getProgress={(i) => steps[i]?.progress ?? 0}
             audioStepId={audioStepId}
             audioShouldPlay={audioShouldPlay}
-            wsClient={wsClient}
           />
         </div>
 
