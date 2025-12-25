@@ -21,79 +21,95 @@ export default function AudioStepPlayer({
   onClose,
 }: Props) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const ctxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const dataRef = useRef<Uint8Array | null>(null);
   const rafRef = useRef<number | null>(null);
-  const lastSentRef = useRef<number>(0);
 
-  // ===============================
-  // PLAY / PAUSE (gesto do usuário deve controlar shouldPlay)
-  // ===============================
   useEffect(() => {
-    const el = audioRef.current;
-    if (!el) return;
+    if (!visible || !audioRef.current) return;
 
-    if (shouldPlay) el.play().catch(() => {});
-    else el.pause();
-  }, [shouldPlay]);
+    if (!ctxRef.current) {
+      ctxRef.current = new AudioContext();
+    }
 
-  // ===============================
-  // AUDIO CLOCK → WS (60fps via RAF)
-  // ===============================
+    const ctx = ctxRef.current;
+    const audio = audioRef.current;
+
+    if (!sourceRef.current) {
+      sourceRef.current = ctx.createMediaElementSource(audio);
+      analyserRef.current = ctx.createAnalyser();
+      analyserRef.current.fftSize = 512;
+
+      sourceRef.current.connect(analyserRef.current);
+      analyserRef.current.connect(ctx.destination);
+
+      dataRef.current = new Uint8Array(
+        analyserRef.current.frequencyBinCount
+      );
+    }
+  }, [visible, stepId]);
+
   useEffect(() => {
     const audio = audioRef.current;
-    if (!audio || !wsClient) return;
+    const ctx = ctxRef.current;
 
-    const loop = () => {
-      rafRef.current = requestAnimationFrame(loop);
+    if (!audio || !ctx) return;
 
-      // envia ~30fps (mais que isso é desperdício)
-      const now = performance.now();
-      if (now - lastSentRef.current < 33) return;
-      lastSentRef.current = now;
+    if (shouldPlay) {
+      ctx.resume().catch(() => {});
+      audio.play().catch(() => {});
+      loop();
+    } else {
+      audio.pause();
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    }
+  }, [shouldPlay]);
 
-      if (!Number.isFinite(audio.currentTime)) return;
+  const loop = () => {
+    if (!analyserRef.current || !dataRef.current || !wsClient) return;
 
-      const elapsedMs = Math.floor(audio.currentTime * 1000);
+    const analyser = analyserRef.current;
+    const data = dataRef.current;
 
-      // energia "mínima" útil: só clock + hint.
-      // energia REAL vai vir do AudioContext/Analyser (próximo passo).
+    const tick = () => {
+      rafRef.current = requestAnimationFrame(tick);
+      analyser.getByteFrequencyData(data);
+
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i];
+      const energy = Math.min(1, sum / (data.length * 255));
+
       wsClient.send({
         type: "player_audio_frame",
         data: {
           stepIndex,
-          elapsedMs,
-          energy: 0,
-          bands: {},
-          beat: false,
+          elapsedMs: Math.floor(
+            (audioRef.current?.currentTime ?? 0) * 1000
+          ),
+          energy,
         },
       });
     };
 
-    rafRef.current = requestAnimationFrame(loop);
-
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    };
-  }, [wsClient, stepIndex]);
+    tick();
+  };
 
   if (!visible || !stepId) return null;
 
   return (
-    <div className="fixed bottom-4 left-4 right-4 z-[999] rounded-2xl bg-white shadow-xl border p-4">
-      <div className="flex items-center justify-between mb-2">
-        <div className="text-sm font-semibold">Áudio</div>
-        <button
-          onClick={onClose}
-          className="text-sm px-3 py-1 rounded-lg border hover:bg-gray-50"
-        >
-          Fechar
-        </button>
+    <div className="fixed bottom-4 left-4 right-4 bg-white border p-4 rounded-xl">
+      <div className="flex justify-between mb-2">
+        <strong>Áudio</strong>
+        <button onClick={onClose}>Fechar</button>
       </div>
 
       <audio
         ref={audioRef}
         src={`${process.env.NEXT_PUBLIC_API_URL}/audio/stream/${stepId}`}
         controls
+        preload="auto"
         className="w-full"
       />
     </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import SimulatedVU from "./SimulatedVU";
 import { PlaylistStep } from "../types/playlist";
 import { UiMode } from "../utils/uiMode";
@@ -28,9 +28,7 @@ interface Props {
 
 function clamp01(n: number) {
   if (Number.isNaN(n)) return 0;
-  if (n < 0) return 0;
-  if (n > 1) return 1;
-  return n;
+  return Math.max(0, Math.min(1, n));
 }
 
 function getAudioEl(stepId: string | null) {
@@ -52,48 +50,123 @@ export default function PlaylistView({
   getProgress,
   audioStepId,
   audioShouldPlay,
+  wsClient,
 }: Props) {
-  const [audioActuallyPlaying, setAudioActuallyPlaying] = useState(false);
+  const [audioPlaying, setAudioPlaying] = useState(false);
 
-  // ✅ garante play/pause do elemento (quando vindo de clique/skip/resume)
+  // ===== AUDIO ANALYSIS (SEM QUEBRAR O SOM) =====
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const lastSentRef = useRef<number>(0);
+  const dataArrayRef = useRef<Uint8Array | null>(null);
+
+  // ===============================
+  // PLAY / PAUSE DO <audio>
+  // ===============================
   useEffect(() => {
     if (!audioStepId) return;
-
     const el = getAudioEl(audioStepId);
     if (!el) return;
 
     if (audioShouldPlay) {
-      requestAnimationFrame(() => {
-        const current = getAudioEl(audioStepId);
-        if (!current) return;
-        current.play().catch(() => {});
-      });
+      el.play().catch(() => {});
     } else {
       el.pause();
     }
   }, [audioStepId, audioShouldPlay]);
 
-  const content = useMemo(() => {
-    if (!Array.isArray(steps)) return null;
+  // ===============================
+  // ANALYSER (SOM INTACTO)
+  // ===============================
+  useEffect(() => {
+    const audio = getAudioEl(audioStepId);
+    if (!audio || !wsClient || !audioPlaying) return;
 
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new AudioContext();
+    }
+
+    const ctx = audioCtxRef.current;
+
+    if (!sourceRef.current) {
+      sourceRef.current = ctx.createMediaElementSource(audio);
+      analyserRef.current = ctx.createAnalyser();
+      analyserRef.current.fftSize = 512;
+      analyserRef.current.smoothingTimeConstant = 0.6;
+
+      // ⚠️ CRÍTICO:
+      // NÃO conectar ao destination
+      sourceRef.current.connect(analyserRef.current);
+
+      dataArrayRef.current = new Uint8Array(
+        analyserRef.current.frequencyBinCount
+      );
+    }
+
+    const analyser = analyserRef.current!;
+    const data = dataArrayRef.current!;
+
+    const tick = () => {
+      if (!audioPlaying) return;
+
+      analyser.getByteTimeDomainData(data);
+
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128;
+        sum += v * v;
+      }
+
+      const rms = Math.sqrt(sum / data.length);
+      const energy = clamp01(rms * 4.0); // mais sensível
+
+      const now = performance.now();
+      if (now - lastSentRef.current > 16) {
+        lastSentRef.current = now;
+
+        wsClient.send({
+          type: "player_audio_frame",
+          data: {
+            stepIndex: activeIndex,
+            elapsedMs: Math.floor(audio.currentTime * 1000),
+            energy,
+          },
+        });
+      }
+
+      rafRef.current = requestAnimationFrame(tick);
+    };
+
+    ctx.resume().catch(() => {});
+    rafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    };
+  }, [audioStepId, audioPlaying, wsClient, activeIndex]);
+
+  // ===============================
+  // UI
+  // ===============================
+  const content = useMemo(() => {
     return steps.map((step, index) => {
       const isActive = index === activeIndex;
       const isProcessing = step.status === "processing";
-      const isReady = step.status === "ready";
       const isError = step.status === "error";
 
       const rawProgress =
-        typeof step.progress === "number" ? step.progress : getProgress(index);
+        typeof step.progress === "number"
+          ? step.progress
+          : getProgress(index);
 
       const progress = clamp01(rawProgress);
 
       return (
         <div
           key={step.id}
-          onClick={() => {
-            if (!isReady) return;
-            onSelectStep?.(step.id);
-          }}
           className={`
             rounded-xl border p-4 transition-all
             ${isActive ? "border-blue-300 bg-blue-50/60" : "border-gray-200"}
@@ -115,21 +188,15 @@ export default function PlaylistView({
             {mode === "operator" && (
               <div className="flex items-center gap-2">
                 <button
-                  disabled={!isReady}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onPlayStep(step.id);
-                  }}
-                  className="px-3 py-1.5 border rounded-lg text-sm disabled:opacity-40"
+                  disabled={step.status !== "ready"}
+                  onClick={() => onPlayStep(step.id)}
+                  className="px-3 py-1.5 border rounded-lg"
                 >
                   ▶
                 </button>
 
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDelete(step.id);
-                  }}
+                  onClick={() => onDelete(step.id)}
                   className="px-3 py-1.5 border border-red-300 rounded-lg text-sm text-red-600"
                 >
                   🗑
@@ -149,38 +216,29 @@ export default function PlaylistView({
             </div>
           )}
 
-          {/* 🔊 PLAYER + VU DENTRO DO STEP ATIVO */}
           {step.id === audioStepId && (
             <div className="mt-4 rounded-xl border bg-white p-3">
               <audio
                 data-step-id={step.id}
                 src={`${process.env.NEXT_PUBLIC_API_URL}/audio/stream/${step.id}`}
-                preload="auto"
                 controls
+                preload="auto"
                 className="w-full"
-                onPlay={() => setAudioActuallyPlaying(true)}
-                onPause={() => setAudioActuallyPlaying(false)}
+                onPlay={() => setAudioPlaying(true)}
+                onPause={() => setAudioPlaying(false)}
               />
 
-              <SimulatedVU active={audioActuallyPlaying} />
+              <SimulatedVU active={audioPlaying} />
             </div>
           )}
         </div>
       );
     });
-  }, [
-    steps,
-    activeIndex,
-    mode,
-    onDelete,
-    onPlayStep,
-    onSelectStep,
-    getProgress,
-    audioStepId,
-  ]);
+  }, [steps, activeIndex, mode, audioStepId, audioPlaying]);
 
   return (
     <section className="rounded-2xl border border-gray-200/70 bg-white shadow-sm">
+      {/* HEADER COM ESTILO RESTAURADO */}
       <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200/60">
         <div>
           <div className="text-xs font-semibold tracking-widest uppercase text-gray-500">

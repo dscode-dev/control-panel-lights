@@ -1,4 +1,3 @@
-// app/page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -24,16 +23,6 @@ function getAudioEl(stepId: string | null) {
   );
 }
 
-function playAudioNow(stepId: string | null) {
-  if (!stepId) return;
-
-  requestAnimationFrame(() => {
-    const el = getAudioEl(stepId);
-    if (!el) return;
-    el.play().catch(() => {});
-  });
-}
-
 function pauseAudioNow(stepId: string | null) {
   const el = getAudioEl(stepId);
   if (!el) return;
@@ -41,32 +30,26 @@ function pauseAudioNow(stepId: string | null) {
 }
 
 export default function Page() {
-  // store
   const steps = usePlaylistStore((s) => s.steps);
   const setSteps = usePlaylistStore((s) => s.setSteps);
   const removeStep = usePlaylistStore((s) => s.removeStep);
 
-  // ui
   const [mode, setMode] = useState<UiMode>("operator");
   const toggleMode = () =>
     setMode((p) => (p === "operator" ? "show" : "operator"));
 
-  // backend status
   const [status, setStatus] = useState<any>(null);
   const [activeIndex, setActiveIndex] = useState(-1);
 
-  // 🔊 áudio
   const [audioStepId, setAudioStepId] = useState<string | null>(null);
   const [audioShouldPlay, setAudioShouldPlay] = useState(false);
 
-  // ➕ modal add step
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [addLoading, setAddLoading] = useState(false);
 
-  // ws client (pra AudioStepPlayer / frames)
   const [wsClient, setWsClient] = useState<WsClient | null>(null);
 
-  // 🔐 flag: só pode dar play automático local se vier de um gesto do usuário
+  // 🔐 só permite play real após gesto do usuário
   const userGestureRef = useRef(false);
 
   const activeStep = useMemo(() => {
@@ -74,9 +57,10 @@ export default function Page() {
     return steps[activeIndex] ?? null;
   }, [steps, activeIndex]);
 
-  const findIndexById = (id: string) => steps.findIndex((s) => s.id === id);
+  const findIndexById = (id: string) =>
+    steps.findIndex((s) => s.id === id);
 
-  // initial load
+  // INITIAL LOAD
   useEffect(() => {
     (async () => {
       const playlist = await api.getPlaylist();
@@ -92,7 +76,7 @@ export default function Page() {
     })();
   }, [setSteps]);
 
-  // websocket
+  // WEBSOCKET
   useEffect(() => {
     const sock = connectSocket({
       onOpen: () => setWsClient(sock),
@@ -107,20 +91,17 @@ export default function Page() {
           const s = msg.data;
           setStatus(s);
 
-          // Atualiza activeIndex SEM disparar play
           if (typeof s?.activeIndex === "number") {
             setActiveIndex(s.activeIndex);
 
             const step = steps[s.activeIndex];
             const stepId = step?.id ?? null;
 
-            // só sincroniza o stepId pra UI (mostra card e áudio)
             if (stepId && stepId !== audioStepId) {
               setAudioStepId(stepId);
             }
           }
 
-          // Se backend pausou, pause local também (isso é safe)
           if (s?.isPlaying === false) {
             setAudioShouldPlay(false);
             pauseAudioNow(audioStepId);
@@ -134,27 +115,23 @@ export default function Page() {
       sock.close();
       setWsClient(null);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setSteps, steps, audioStepId]);
 
-  // ▶ play via step (único play do sistema)
+  // ▶ PLAY
   async function onPlayStep(stepId: string) {
     const idx = findIndexById(stepId);
     if (idx < 0) return;
 
-    setActiveIndex(idx);
-
-    // 🔑 gesto do usuário: habilita tocar áudio local
     userGestureRef.current = true;
 
+    setActiveIndex(idx);
     setAudioStepId(stepId);
     setAudioShouldPlay(true);
-    playAudioNow(stepId);
 
     await api.playStepByIndex(idx);
   }
 
-  // ⏸ pause (backend + local)
+  // ⏸ PAUSE
   async function onPause() {
     userGestureRef.current = false;
 
@@ -164,23 +141,20 @@ export default function Page() {
     await api.pausePlayer();
   }
 
-  // ▶ resume (backend + local) — só se houve gesto do usuário
+  // ▶ RESUME
   async function onResume() {
     if (!audioStepId) return;
 
     userGestureRef.current = true;
-
     setAudioShouldPlay(true);
-    playAudioNow(audioStepId);
 
     await api.resumePlayer();
   }
 
-  // ⏭ skip (gesto do usuário) — define próximo step local ANTES do backend
+  // ⏭ SKIP
   async function onSkip() {
     userGestureRef.current = true;
 
-    // para o atual local
     pauseAudioNow(audioStepId);
     setAudioShouldPlay(false);
 
@@ -197,14 +171,12 @@ export default function Page() {
       setActiveIndex(nextIndex);
       setAudioStepId(nextId);
       setAudioShouldPlay(true);
-      playAudioNow(nextId);
     }
 
-    // backend vai avançar e emitir status via WS (sincroniza leds)
     await api.skip();
   }
 
-  // 🗑 delete
+  // 🗑 DELETE
   async function onDelete(stepId: string) {
     const idx = findIndexById(stepId);
     if (idx < 0) return;
@@ -220,7 +192,6 @@ export default function Page() {
     }
   }
 
-  // ➕ modal handlers
   function openAddModal() {
     setAddModalOpen(true);
   }
@@ -230,7 +201,6 @@ export default function Page() {
     setAddModalOpen(false);
   }
 
-  // ✅ SUBMIT DO STEPFORM (FormData)
   async function submitAddStep(formData: FormData) {
     try {
       setAddLoading(true);
@@ -288,7 +258,6 @@ export default function Page() {
             getProgress={(i) => steps[i]?.progress ?? 0}
             audioStepId={audioStepId}
             audioShouldPlay={audioShouldPlay}
-            // 👇 passa wsClient se quiser usar AudioStepPlayer separado depois
             wsClient={wsClient}
           />
         </div>
@@ -299,7 +268,6 @@ export default function Page() {
         </div>
       </div>
 
-      {/* ✅ MODAL COM STEPFORM */}
       <Modal open={addModalOpen} title="Adicionar Step" onClose={closeAddModal}>
         <StepForm onSubmit={submitAddStep} />
       </Modal>
