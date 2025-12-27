@@ -8,13 +8,13 @@ import StatusPanel from "@/components/StatusPanel";
 import ESPStatusPanel from "@/components/ESPStatusPanel";
 import Modal from "@/components/Modal";
 import StepForm from "@/components/StepForm";
+import PlaylistView from "@/components/PaylistView";
 
 import * as api from "@/services/api";
 import { connectSocket } from "@/services/socket";
 import { usePlaylistStore } from "@/utils/playlistStore";
 
 import type { UiMode } from "@/utils/uiMode";
-import PlaylistView from "@/components/PaylistView";
 
 function getAudioEl(stepId: string | null) {
   if (!stepId) return null;
@@ -25,7 +25,6 @@ function getAudioEl(stepId: string | null) {
 
 function playAudioNow(stepId: string | null) {
   if (!stepId) return;
-
   requestAnimationFrame(() => {
     const el = getAudioEl(stepId);
     if (!el) return;
@@ -40,25 +39,25 @@ function pauseAudioNow(stepId: string | null) {
 }
 
 export default function Page() {
-  // store
+  /* ---------------- store ---------------- */
   const steps = usePlaylistStore((s) => s.steps);
   const setSteps = usePlaylistStore((s) => s.setSteps);
   const removeStep = usePlaylistStore((s) => s.removeStep);
 
-  // ui
+  /* ---------------- ui ---------------- */
   const [mode, setMode] = useState<UiMode>("operator");
   const toggleMode = () =>
     setMode((p) => (p === "operator" ? "show" : "operator"));
 
-  // backend status
+  /* ---------------- backend status ---------------- */
   const [status, setStatus] = useState<any>(null);
   const [activeIndex, setActiveIndex] = useState(-1);
 
-  // 🔊 áudio
+  /* ---------------- áudio ---------------- */
   const [audioStepId, setAudioStepId] = useState<string | null>(null);
   const [audioShouldPlay, setAudioShouldPlay] = useState(false);
 
-  // ➕ modal add step
+  /* ---------------- modal ---------------- */
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [addLoading, setAddLoading] = useState(false);
 
@@ -69,7 +68,7 @@ export default function Page() {
 
   const findIndexById = (id: string) => steps.findIndex((s) => s.id === id);
 
-  // initial load
+  /* ---------------- initial load ---------------- */
   useEffect(() => {
     (async () => {
       const playlist = await api.getPlaylist();
@@ -85,7 +84,7 @@ export default function Page() {
     })();
   }, [setSteps]);
 
-  // websocket (somente status/playlist)
+  /* ---------------- websocket ---------------- */
   useEffect(() => {
     const sock = connectSocket({
       onMessage: (msg: any) => {
@@ -100,13 +99,8 @@ export default function Page() {
 
           if (typeof s?.activeIndex === "number") {
             setActiveIndex(s.activeIndex);
-
             const step = steps[s.activeIndex];
-            const stepId = step?.id ?? null;
-
-            if (stepId) {
-              setAudioStepId(stepId);
-            }
+            if (step?.id) setAudioStepId(step.id);
           }
 
           if (s?.isPlaying === false) {
@@ -120,13 +114,12 @@ export default function Page() {
     return () => sock.close();
   }, [setSteps, steps, audioStepId]);
 
-  // ▶ play
+  /* ---------------- PLAY ---------------- */
   async function onPlayStep(stepId: string) {
     const idx = findIndexById(stepId);
     if (idx < 0) return;
 
     setActiveIndex(idx);
-
     setAudioStepId(stepId);
     setAudioShouldPlay(true);
     playAudioNow(stepId);
@@ -134,14 +127,39 @@ export default function Page() {
     await api.playStepByIndex(idx);
   }
 
-  // ⏸ pause
+  /* ---------------- AUTO NEXT (audio ended) ---------------- */
+  function handleAudioEnded(stepId: string) {
+    const idx = findIndexById(stepId);
+    if (idx < 0) return;
+
+    const nextIndex = idx + 1;
+    if (nextIndex >= steps.length) return;
+
+    const nextStep = steps[nextIndex];
+    if (!nextStep || nextStep.status !== "ready") return;
+
+    pauseAudioNow(audioStepId);
+    setAudioShouldPlay(false);
+
+    setActiveIndex(nextIndex);
+    setAudioStepId(nextStep.id);
+    setAudioShouldPlay(true);
+
+    requestAnimationFrame(() => {
+      playAudioNow(nextStep.id);
+    });
+
+    api.playStepByIndex(nextIndex).catch(() => {});
+  }
+
+  /* ---------------- PAUSE ---------------- */
   async function onPause() {
     pauseAudioNow(audioStepId);
     setAudioShouldPlay(false);
     await api.pausePlayer();
   }
 
-  // ▶ resume
+  /* ---------------- RESUME ---------------- */
   async function onResume() {
     if (!audioStepId) return;
     setAudioShouldPlay(true);
@@ -149,31 +167,39 @@ export default function Page() {
     await api.resumePlayer();
   }
 
-  // ⏭ skip
+  /* ---------------- NEXT (CORRIGIDO) ---------------- */
   async function onSkip() {
+    if (!steps.length) return;
+
+    // pausa o atual
     pauseAudioNow(audioStepId);
     setAudioShouldPlay(false);
 
+    // calcula próximo
     const nextIndex = (() => {
-      if (!steps.length) return -1;
       const idx = activeIndex + 1;
       return idx >= steps.length ? 0 : idx;
     })();
 
-    const nextStep = nextIndex >= 0 ? steps[nextIndex] : null;
-    const nextId = nextStep?.id ?? null;
+    const nextStep = steps[nextIndex];
+    if (!nextStep || nextStep.status !== "ready") return;
 
-    if (nextId) {
-      setActiveIndex(nextIndex);
-      setAudioStepId(nextId);
-      setAudioShouldPlay(true);
-      playAudioNow(nextId);
-    }
+    // atualiza UI e toca áudio
+    setActiveIndex(nextIndex);
+    setAudioStepId(nextStep.id);
+    setAudioShouldPlay(true);
 
-    await api.skip();
+    requestAnimationFrame(() => {
+      playAudioNow(nextStep.id);
+    });
+
+    // 🔥 backend NÃO avança sozinho -> precisamos iniciar o executor do próximo step
+    await api.playStepByIndex(nextIndex);
+
+    // ⚠️ NÃO chamar api.skip() aqui, senão bagunça index/fluxo
   }
 
-  // 🗑 delete
+  /* ---------------- DELETE ---------------- */
   async function onDelete(stepId: string) {
     const idx = findIndexById(stepId);
     if (idx < 0) return;
@@ -188,16 +214,7 @@ export default function Page() {
     }
   }
 
-  // ➕ modal handlers
-  function openAddModal() {
-    setAddModalOpen(true);
-  }
-
-  function closeAddModal() {
-    if (addLoading) return;
-    setAddModalOpen(false);
-  }
-
+  /* ---------------- ADD STEP ---------------- */
   async function submitAddStep(formData: FormData) {
     try {
       setAddLoading(true);
@@ -248,10 +265,11 @@ export default function Page() {
             steps={steps}
             activeIndex={activeIndex}
             mode={mode}
-            onAdd={openAddModal}
+            onAdd={() => setAddModalOpen(true)}
             onEdit={() => {}}
             onDelete={onDelete}
             onPlayStep={onPlayStep}
+            onAudioEnded={handleAudioEnded}
             getProgress={(i) => steps[i]?.progress ?? 0}
             audioStepId={audioStepId}
             audioShouldPlay={audioShouldPlay}
@@ -264,7 +282,11 @@ export default function Page() {
         </div>
       </div>
 
-      <Modal open={addModalOpen} title="Adicionar Step" onClose={closeAddModal}>
+      <Modal
+        open={addModalOpen}
+        title="Adicionar Step"
+        onClose={() => !addLoading && setAddModalOpen(false)}
+      >
         <StepForm onSubmit={submitAddStep} />
       </Modal>
     </div>

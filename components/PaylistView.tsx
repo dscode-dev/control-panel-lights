@@ -16,6 +16,7 @@ interface Props {
   onDelete: (stepId: string) => void;
   onPlayStep: (stepId: string) => void;
   onSelectStep?: (stepId: string) => void;
+  onAudioEnded?: (stepId: string) => void; // ✅ NOVO (mínimo)
 
   getProgress: (index: number) => number;
 
@@ -46,16 +47,15 @@ export default function PlaylistView({
   onDelete,
   onPlayStep,
   onSelectStep,
+  onAudioEnded, // ✅
   getProgress,
   audioStepId,
   audioShouldPlay,
 }: Props) {
   const [audioActuallyPlaying, setAudioActuallyPlaying] = useState(false);
 
-  // ✅ play/pause do <audio> sem mexer em AudioContext (isso tava mutando)
   useEffect(() => {
     if (!audioStepId) return;
-
     const el = getAudioEl(audioStepId);
     if (!el) return;
 
@@ -146,7 +146,6 @@ export default function PlaylistView({
             </div>
           )}
 
-          {/* 🔊 PLAYER + VU DENTRO DO STEP ATIVO */}
           {step.id === audioStepId && (
             <div className="mt-4 rounded-xl border bg-white p-3">
               <audio
@@ -157,6 +156,7 @@ export default function PlaylistView({
                 className="w-full"
                 onPlay={() => setAudioActuallyPlaying(true)}
                 onPause={() => setAudioActuallyPlaying(false)}
+                onEnded={() => onAudioEnded?.(step.id)} // ✅ AQUI
               />
               <SimulatedVU active={audioActuallyPlaying} />
             </div>
@@ -171,6 +171,7 @@ export default function PlaylistView({
     onDelete,
     onPlayStep,
     onSelectStep,
+    onAudioEnded,
     getProgress,
     audioStepId,
   ]);
