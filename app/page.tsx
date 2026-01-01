@@ -130,10 +130,10 @@ export default function Page() {
   /* ---------------- AUTO NEXT (audio ended) ---------------- */
   function handleAudioEnded(stepId: string) {
     const idx = findIndexById(stepId);
-    if (idx < 0) return;
+    if (idx < 0 || !steps.length) return;
 
-    const nextIndex = idx + 1;
-    if (nextIndex >= steps.length) return;
+    // 🔁 LOOP: se acabou, volta pro início
+    const nextIndex = idx + 1 >= steps.length ? 0 : idx + 1;
 
     const nextStep = steps[nextIndex];
     if (!nextStep || nextStep.status !== "ready") return;
@@ -149,6 +149,7 @@ export default function Page() {
       playAudioNow(nextStep.id);
     });
 
+    // mantém backend sincronizado
     api.playStepByIndex(nextIndex).catch(() => {});
   }
 
